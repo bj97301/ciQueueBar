@@ -18,6 +18,7 @@ The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶)
 - your self-hosted runners and whether each is busy, idle or offline, with live CPU
 - **history per runner type**: queued and running jobs over 1H / 6H / 1D / 7D / 30D, plus a stacked chart of **CPU per runner**
 - a **CPU** section at the top: running jobs ranked by CPU right now (project · branch · workflow / job · runner), a stacked chart of CPU by repo, branch, workflow or job, and the top ones for the period in core-hours
+- **which T3 Code thread started it**: each job shows a purple "T3: thread title" line; click it to open that thread in T3 Code. Matching uses T3's local database (`~/.t3/userdata/statev2.sqlite`, read-only): first the run's pull request (or the PR in a "Merge pull request #N" push), then the branch a thread worked on. `CIQueueBar --match owner/repo branch [pr]` shows what a run would match.
 - **every chart has a hover card**: the queue chart lists queued and running jobs; CPU charts list each runner or group with its cores and the job it was running
 - hover the queue chart to see which project, branch and workflow / job were queued and running at that moment
 

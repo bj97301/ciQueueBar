@@ -19,8 +19,9 @@ struct JobCPU: Codable {
     let n: String       // job
     let rn: String      // runner
     let c: Double       // cores
+    var t: String? = nil  // T3 thread title
 
-    var text: String { "\(r) · \(br ?? "?") · \(w) / \(n)" }
+    var text: String { "\(r) · \(br ?? "?") · \(w) / \(n)" + (t.map { "\nT3: \($0)" } ?? "") }
 }
 
 enum CPUGroup: String, CaseIterable, Identifiable {
@@ -51,6 +52,7 @@ struct JobRef: Codable, Hashable {
     let br: String?     // branch
     let w: String       // workflow
     let n: String       // job
+    var t: String? = nil  // T3 thread title
 
     var text: String { [r, br, "\(w) / \(n)"].compactMap { $0 }.joined(separator: " · ") }
 }

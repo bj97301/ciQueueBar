@@ -111,13 +111,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         var refs: [String: JobRefs] = [:]
         for g in groups {
-            func ref(_ j: Job) -> JobRef { JobRef(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name) }
+            func ref(_ j: Job) -> JobRef { JobRef(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name, t: j.t3?.title) }
             refs[g.bucket.key] = JobRefs(q: g.queued.map(ref), run: g.running.map(ref))
         }
         // Attribute each runner's CPU to the job it's running.
         let usage: [JobCPU] = groups.flatMap(\.running).compactMap { j in
             guard let rn = j.runnerName, let c = mean[rn], c >= 0.02 else { return nil }
-            return JobCPU(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name, rn: rn, c: c)
+            return JobCPU(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name, rn: rn, c: c, t: j.t3?.title)
         }
         store.history.append(Sample(t: Date().timeIntervalSince1970, b: b, c: mean.filter { $0.value >= 0.05 }, j: refs, u: usage))
         store.historyVersion += 1
@@ -173,6 +173,14 @@ MainActor.assumeIsolated {
     UIScale = CGFloat(min(4, max(0.5, Config.load().textScale ?? 1.5)))
     let args = CommandLine.arguments
     let app = NSApplication.shared
+    // --match owner/repo branch [pr...]: print the T3 thread a run would link to.
+    if let i = args.firstIndex(of: "--match"), i + 2 < args.count {
+        let idx = T3Index()
+        idx.refresh(dbPath: Config.load().t3StateDb)
+        let link = idx.link(repo: args[i + 1], branch: args[i + 2], prNumbers: args.dropFirst(i + 3).compactMap { Int($0) })
+        print(link.map { "\($0.title) [\($0.via)] \($0.url)" } ?? "no match")
+        exit(0)
+    }
     if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
         let period = args.firstIndex(of: "--period").flatMap { $0 + 1 < args.count ? Period(rawValue: args[$0 + 1]) : nil }
         app.setActivationPolicy(.prohibited)

@@ -271,6 +271,7 @@ struct JobRow: View {
                     if let l3 = line3 {
                         Text(l3).font(.s(11)).foregroundStyle(.tertiary).lineLimit(1)
                     }
+                    if let t = job.t3 { T3Button(link: t) }
                     if let p = job.steps, job.isRunning {
                         HStack(spacing: 6) {
                             ZStack(alignment: .leading) {
@@ -310,6 +311,24 @@ struct JobRow: View {
         if let e = job.event { parts.append(e) }
         if let c = job.commitTitle { parts.append("“\(c)”") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// "T3 thread title" link; clicking opens the thread in T3 Code.
+struct T3Button: View {
+    let link: T3Link
+
+    var body: some View {
+        HStack(spacing: 3 * UIScale) {
+            Image(systemName: "bubble.left.and.text.bubble.right.fill")
+            Text("T3: \(link.title)").lineLimit(1).truncationMode(.tail)
+            Text("· \(link.via)").foregroundStyle(.secondary)
+        }
+        .font(.s(11, .medium))
+        .foregroundStyle(Color.purple)
+        .contentShape(Rectangle())
+        .onTapGesture { NSWorkspace.shared.open(link.url) }
+        .help("Open this T3 Code thread")
     }
 }
 

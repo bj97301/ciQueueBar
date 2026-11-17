@@ -4,6 +4,7 @@ final class GitHubClient: @unchecked Sendable {
     private var token: String?
     private let session = URLSession(configuration: .ephemeral)
     private let lock = NSLock()
+    private let t3 = T3Index()
     private(set) var rateRemaining: Int?
     private(set) var rateLimit: Int?
 
@@ -76,6 +77,9 @@ final class GitHubClient: @unchecked Sendable {
             guard let id = run["id"] as? Int else { continue }
             let commit = (run["head_commit"] as? [String: Any])?["message"] as? String
             let actor = ((run["triggering_actor"] ?? run["actor"]) as? [String: Any])?["login"] as? String
+            var prNumbers = (run["pull_requests"] as? [[String: Any]] ?? []).compactMap { $0["number"] as? Int }
+            if let c = commit, let m = c.range(of: #"Merge pull request #(\d+)"#, options: .regularExpression),
+               let n = Int(c[m].filter(\.isNumber)) { prNumbers.append(n) }
             let obj = try await get("/repos/\(repo)/actions/runs/\(id)/jobs?filter=latest&per_page=100") as? [String: Any]
             for j in obj?["jobs"] as? [[String: Any]] ?? [] {
                 let status = j["status"] as? String ?? ""
@@ -102,7 +106,8 @@ final class GitHubClient: @unchecked Sendable {
                     event: run["event"] as? String,
                     actor: actor,
                     commitTitle: commit?.split(separator: "\n").first.map(String.init),
-                    steps: progress))
+                    steps: progress,
+                    prNumbers: prNumbers))
             }
         }
         return jobs
@@ -211,7 +216,12 @@ final class GitHubClient: @unchecked Sendable {
         let owners = Set(repos.compactMap { $0.split(separator: "/").first.map(String.init) })
         async let runners = runners(owners: owners, repos: repos)
         var s = Snapshot()
-        s.jobs = await jobs
+        t3.refresh(dbPath: config.t3StateDb)
+        s.jobs = await jobs.map { j in
+            var j = j
+            j.t3 = t3.link(repo: j.repo, branch: j.branch, prNumbers: j.prNumbers)
+            return j
+        }
         s.runners = await runners
         s.repoCount = repos.count
         s.rateRemaining = rateRemaining

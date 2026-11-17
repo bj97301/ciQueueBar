@@ -93,7 +93,7 @@ struct HoverCard: View {
                         Circle().fill(r.color).frame(width: 5 * UIScale, height: 5 * UIScale)
                         VStack(alignment: .leading, spacing: 0) {
                             Text(r.label).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
-                            if let d = r.detail { Text(d).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
+                            if let d = r.detail { Text(d).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle) }
                         }
                         Spacer(minLength: 4)
                         Text(r.value).fontWeight(.semibold).monospacedDigit()
@@ -140,6 +140,9 @@ struct HoverCard: View {
                     Text(key).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
                     ForEach(Array((groups[key] ?? []).enumerated()), id: \.offset) { _, r in
                         Text("\(r.w) / \(r.n)").foregroundStyle(.secondary).lineLimit(1).padding(.leading, 8)
+                    }
+                    if let t = (groups[key] ?? []).compactMap(\.t).first {
+                        Text("T3: \(t)").foregroundStyle(.purple).lineLimit(1).padding(.leading, 8)
                     }
                 }
             }
@@ -314,6 +317,7 @@ struct CPUSection: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text("\(j.repoShort) · \(j.branch ?? "?")").font(.s(11, .semibold)).lineLimit(1)
                         Text("\(j.workflow) / \(j.name) · \(j.runnerName ?? "")").font(.s(10)).foregroundStyle(.secondary).lineLimit(1)
+                        if let t = j.t3 { T3Button(link: t) }
                     }
                     Spacer()
                 }

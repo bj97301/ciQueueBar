@@ -24,6 +24,10 @@ struct Job: Hashable, Identifiable {
     let actor: String?
     let commitTitle: String?
     let steps: StepProgress?
+    /// PR numbers tied to the run: its pull_requests plus "Merge pull request #N" in the commit title.
+    var prNumbers: [Int] = []
+    /// T3 Code thread that most likely started it.
+    var t3: T3Link? = nil
 
     var isRunning: Bool { status == "in_progress" }
     var repoShort: String { repo.split(separator: "/").last.map(String.init) ?? repo }
@@ -110,6 +114,8 @@ struct Config: Decodable {
     var textScale: Double?
     /// Section columns: 1 or 2 (default: 2 when the screen is wide enough).
     var columns: Int?
+    /// T3 Code state database (default ~/.t3/userdata/statev2.sqlite).
+    var t3StateDb: String?
 
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ciqueuebar")
