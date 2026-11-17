@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Room for header + footer + popover chrome; content grows up to the rest.
         let screen = b.window?.screen ?? NSScreen.main
         store.maxHeight = max(300, (screen?.visibleFrame.height ?? 900) - 130)
+        let fitsTwo = (screen?.visibleFrame.width ?? 1600) >= columnWidth * 2 + 60 * UIScale
+        store.columns = Config.load().columns.map { min(2, max(1, $0)) } ?? (fitsTwo ? 2 : 1)
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         // Clicks in other apps don't reach a transient popover of an inactive app; close on any of them.
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in

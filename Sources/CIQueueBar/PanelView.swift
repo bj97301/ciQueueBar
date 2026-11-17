@@ -11,6 +11,8 @@ final class Store: ObservableObject {
     /// Bumped whenever history changes so charts redraw.
     @Published var historyVersion = 0
     @Published var maxHeight: CGFloat = 900
+    /// Section columns (2 when the screen is wide enough; config "columns" overrides).
+    @Published var columns = 2
     /// Hover card shown over the whole panel.
     @Published var hover: HoverInfo?
     /// Snapshot mode only: show the hover card for this chart id at this time.
@@ -76,7 +78,7 @@ struct PanelView: View {
             Divider()
             footer
         }
-        .frame(width: 600 * UIScale * 0.9)
+        .frame(width: columnWidth * CGFloat(store.columns) + 7 * UIScale * CGFloat(store.columns - 1) + 14 * UIScale)
         .coordinateSpace(name: "panel")
         .overlay(alignment: .topLeading) {
             GeometryReader { root in
@@ -127,10 +129,12 @@ struct PanelView: View {
             } else if visibleGroups.isEmpty {
                 Text("No queued or running jobs").foregroundStyle(.secondary)
             }
-            if !store.snapshot.runners.isEmpty { CPUSection(store: store) }
-            ForEach(visibleGroups) { g in
-                BucketSection(group: g, store: store,
-                              bins: store.history.bins(bucket: g.bucket, period: store.period))
+            MasonryLayout(columns: store.columns, spacing: 7 * UIScale) {
+                if !store.snapshot.runners.isEmpty { CPUSection(store: store) }
+                ForEach(visibleGroups) { g in
+                    BucketSection(group: g, store: store,
+                                  bins: store.history.bins(bucket: g.bucket, period: store.period))
+                }
             }
         }
         .padding(7 * UIScale)
@@ -210,6 +214,7 @@ struct BucketSection: View {
                 Text("Idle").font(.s(11)).foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(5 * UIScale)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
     }
@@ -305,6 +310,42 @@ struct JobRow: View {
         if let e = job.event { parts.append(e) }
         if let c = job.commitTitle { parts.append("“\(c)”") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// Width of one section column.
+let columnWidth: CGFloat = 540 * UIScale
+
+/// Places each section in the currently shorter column, keeping columns balanced.
+struct MasonryLayout: Layout {
+    var columns: Int
+    var spacing: CGFloat
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> (frames: [CGRect], height: CGFloat) {
+        let n = max(1, columns)
+        let colW = (width - spacing * CGFloat(n - 1)) / CGFloat(n)
+        var heights = [CGFloat](repeating: 0, count: n)
+        var frames: [CGRect] = []
+        for v in subviews {
+            let h = v.sizeThatFits(ProposedViewSize(width: colW, height: nil)).height
+            let c = heights.indices.min { heights[$0] < heights[$1] } ?? 0
+            frames.append(CGRect(x: CGFloat(c) * (colW + spacing), y: heights[c], width: colW, height: h))
+            heights[c] += h + spacing
+        }
+        return (frames, max(0, (heights.max() ?? 0) - spacing))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? columnWidth * CGFloat(columns)
+        return CGSize(width: width, height: arrange(width: width, subviews: subviews).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = arrange(width: bounds.width, subviews: subviews).frames
+        for (v, f) in zip(subviews, frames) {
+            v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY),
+                    proposal: ProposedViewSize(width: f.width, height: f.height))
+        }
     }
 }
 

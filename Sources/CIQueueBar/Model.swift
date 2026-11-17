@@ -108,6 +108,8 @@ struct Config: Decodable {
     var backfillHours: Double?
     /// Panel text size multiplier (default 2).
     var textScale: Double?
+    /// Section columns: 1 or 2 (default: 2 when the screen is wide enough).
+    var columns: Int?
 
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ciqueuebar")

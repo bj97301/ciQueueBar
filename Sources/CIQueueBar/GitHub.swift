@@ -123,7 +123,8 @@ final class GitHubClient: @unchecked Sendable {
             }
         }
         var seen = Set<String>()
-        return out.filter { seen.insert($0.name).inserted }
+        // Blacksmith registers its short-lived VMs as runners too; they aren't your machines.
+        return out.filter { !$0.name.hasPrefix("blacksmith") && seen.insert($0.name).inserted }
     }
 
     private func parseRunners(_ obj: [String: Any], owner: String) -> [Runner] {
