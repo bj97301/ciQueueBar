@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// CPU samples accumulated between history records, so each record holds the mean.
     private var cpuSum: [String: Double] = [:]
     private var cpuCount = 0
+    /// Last 30 CPU samples (10 s apart) split into Mac / Linux cores, for the menu bar graph.
+    private var cpuTrail: [(mac: Double, linux: Double)] = []
+    private let hostCores = Double(ProcessInfo.processInfo.activeProcessorCount)
+    private var escMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "CI …"
@@ -47,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let fitsTwo = (screen?.visibleFrame.width ?? 1600) >= columnWidth * 2 + 60 * UIScale
         store.columns = Config.load().columns.map { min(2, max(1, $0)) } ?? (fitsTwo ? 2 : 1)
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        // Take keyboard focus (you just clicked us) so Esc reaches the panel; focus goes back on close.
+        NSApp.activate(ignoringOtherApps: true)
+        popover.contentViewController?.view.window?.makeKey()
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53 { self?.popover.performClose(nil); return nil }   // Esc
+            return e
+        }
         // Clicks in other apps don't reach a transient popover of an inactive app; close on any of them.
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             Task { @MainActor in self?.popover.performClose(nil) }
@@ -58,6 +69,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     nonisolated func popoverDidClose(_ notification: Notification) {
         Task { @MainActor in
             if let m = outsideClickMonitor { NSEvent.removeMonitor(m); outsideClickMonitor = nil }
+            if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+            // Give focus back to whatever app was in front before the click.
+            if NSApp.isActive { NSApp.hide(nil) }
         }
     }
 
@@ -94,6 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.store.cpu = c
                 for (k, v) in c { self.cpuSum[k, default: 0] += v }
                 self.cpuCount += 1
+                self.pushTrail(c)
+                self.updateTitle()
             }
         }
     }
@@ -123,17 +139,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         store.historyVersion += 1
     }
 
+    private func pushTrail(_ c: [String: Double]) {
+        var mac = 0.0, linux = 0.0
+        let runners = Dictionary(store.snapshot.runners.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+        for (name, v) in c {
+            let isLinux = runners[name].map { Bucket.forRunner($0) == .linux } ?? name.lowercased().contains("linux")
+            if isLinux { linux += v } else { mac += v }
+        }
+        cpuTrail.append((mac, linux))
+        if cpuTrail.count > 30 { cpuTrail.removeFirst(cpuTrail.count - 30) }
+    }
+
+    /// Menu bar: CPU graph + "CI CPU % of this Mac" + queue counts, e.g. [▁▃▇] 35%  Mac 2▶  BS 1⏳
     private func updateTitle() {
+        guard let button = statusItem.button else { return }
         let active = store.snapshot.groups.filter { !$0.queued.isEmpty || !$0.running.isEmpty }
-        if store.error != nil && store.snapshot.jobs.isEmpty { statusItem.button?.title = "CI ⚠︎"; return }
-        if active.isEmpty { statusItem.button?.title = "CI ✓"; return }
-        // e.g. "Mac 3⏳1▶  BS 2▶"
-        statusItem.button?.title = active.map { g in
-            var s = g.bucket.short + " "
-            if !g.queued.isEmpty { s += "\(g.queued.count)⏳" }
-            if !g.running.isEmpty { s += "\(g.running.count)▶" }
-            return s
-        }.joined(separator: "  ")
+        let now = cpuTrail.last.map { $0.mac + $0.linux } ?? 0
+        var parts: [String] = []
+        if !cpuTrail.isEmpty { parts.append(String(format: "%.0f%%", 100 * now / max(1, hostCores))) }
+        if store.error != nil && store.snapshot.jobs.isEmpty {
+            parts.append("CI ⚠︎")
+        } else if active.isEmpty {
+            parts.append(cpuTrail.isEmpty ? "CI ✓" : "✓")
+        } else {
+            parts += active.map { g in
+                var s = g.bucket.short + " "
+                if !g.queued.isEmpty { s += "\(g.queued.count)⏳" }
+                if !g.running.isEmpty { s += "\(g.running.count)▶" }
+                return s
+            }
+        }
+        button.attributedTitle = NSAttributedString(
+            string: " " + parts.joined(separator: "  "),
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)])
+        button.image = cpuTrail.isEmpty ? nil : cpuGraph()
+        button.imagePosition = .imageLeft
+        button.toolTip = String(format: "CI CPU: %.1f cores (Mac %.1f, Linux %.1f) of %.0f", now,
+                                cpuTrail.last?.mac ?? 0, cpuTrail.last?.linux ?? 0, hostCores)
+    }
+
+    /// iStat-style bar graph of the last 5 minutes: Linux (green) stacked under Mac (blue), full height = all cores.
+    private func cpuGraph() -> NSImage {
+        let bars = 30, barW: CGFloat = 1.5, h: CGFloat = 16
+        let size = NSSize(width: CGFloat(bars) * barW + 2, height: h)
+        let trail = Array(repeating: (mac: 0.0, linux: 0.0), count: max(0, bars - cpuTrail.count)) + cpuTrail.suffix(bars)
+        let cap = max(1, hostCores)
+        let img = NSImage(size: size, flipped: false) { rect in
+            NSColor.labelColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+            for (i, v) in trail.enumerated() {
+                let x = 1 + CGFloat(i) * barW
+                let lh = CGFloat(min(1, v.linux / cap)) * (h - 2)
+                let mh = CGFloat(min(1, (v.linux + v.mac) / cap)) * (h - 2) - lh
+                NSColor.systemGreen.setFill()
+                NSRect(x: x, y: 1, width: barW, height: lh).fill()
+                NSColor.systemBlue.setFill()
+                NSRect(x: x, y: 1 + lh, width: barW, height: max(0, mh)).fill()
+            }
+            return true
+        }
+        img.isTemplate = false
+        return img
     }
 
     private func openConfig() {

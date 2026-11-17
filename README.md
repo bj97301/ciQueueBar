@@ -12,7 +12,7 @@ Jobs are matched to your registered self-hosted runners by label, so custom labe
 
 ![Panel](docs/panel.png)
 
-The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Click it for a panel (two columns when the screen is wide enough; it grows to fit the screen and closes when you click anywhere else) with:
+The menu bar shows a live bar graph of CI CPU for the last 5 minutes (Linux runners green, Mac runners blue, full height = all of this Mac's cores), the CI CPU as a percentage of this Mac, and queue counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Esc or a click anywhere else closes the panel. Click it for a panel (two columns when the screen is wide enough; it grows to fit the screen and closes when you click anywhere else) with:
 
 - every queued and running job: repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step, and **CPU cores the job is using**
 - your self-hosted runners and whether each is busy, idle or offline, with live CPU
