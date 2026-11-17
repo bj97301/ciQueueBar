@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onConfig: { [weak self] in self?.openConfig() },
             onQuit: { NSApp.terminate(nil) }))
         refresh()
-        let interval = max(15, Config.load().refreshSeconds ?? 45)
+        let interval = max(15, Config.load().refreshSeconds ?? 60)
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }

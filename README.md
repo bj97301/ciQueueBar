@@ -35,7 +35,7 @@ Optional `~/.config/ciqueuebar/config.json`:
   "repos": ["owner/repo", "org/other"],
   "recentDays": 2,
   "maxRepos": 25,
-  "refreshSeconds": 45
+  "refreshSeconds": 60
 }
 ```
 

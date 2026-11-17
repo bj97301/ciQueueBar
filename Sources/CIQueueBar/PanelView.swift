@@ -165,9 +165,13 @@ struct JobRow: View {
                     }
                     if let p = job.steps, job.isRunning {
                         HStack(spacing: 6) {
-                            ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
-                                .progressViewStyle(.linear).frame(width: 90).controlSize(.mini)
-                            Text("step \(min(p.done + 1, p.total))/\(p.total)\(p.current.map { ": \($0)" } ?? "")")
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.primary.opacity(0.12))
+                                Capsule().fill(Color.blue)
+                                    .frame(width: 90 * CGFloat(p.done) / CGFloat(max(p.total, 1)))
+                            }
+                            .frame(width: 90, height: 4)
+                            Text("step \(min(p.done + 1, p.total))/\(p.total)\(p.current.map { ": \(tidyStep($0))" } ?? "")")
                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -225,4 +229,9 @@ struct FlowLayout: Layout {
             x += sz.width + spacing; rowH = max(rowH, sz.height)
         }
     }
+}
+
+/// "Run actions/checkout@93cb6efe…" -> "Run actions/checkout@93cb6ef"
+func tidyStep(_ s: String) -> String {
+    s.replacingOccurrences(of: "@([0-9a-f]{7})[0-9a-f]{33}", with: "@$1", options: .regularExpression)
 }

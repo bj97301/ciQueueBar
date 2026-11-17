@@ -66,11 +66,10 @@ final class GitHubClient: @unchecked Sendable {
     func activeJobs(repo: String) async throws -> [Job] {
         var runs: [[String: Any]] = []
         var seen = Set<Int>()
-        for status in ["queued", "in_progress", "waiting", "pending"] {
-            let obj = try await get("/repos/\(repo)/actions/runs?status=\(status)&per_page=50") as? [String: Any]
-            for r in obj?["workflow_runs"] as? [[String: Any]] ?? [] {
-                if let id = r["id"] as? Int, seen.insert(id).inserted { runs.append(r) }
-            }
+        // One call per repo: newest runs, keep the unfinished ones.
+        let obj = try await get("/repos/\(repo)/actions/runs?per_page=60") as? [String: Any]
+        for r in obj?["workflow_runs"] as? [[String: Any]] ?? [] where (r["status"] as? String) != "completed" {
+            if let id = r["id"] as? Int, seen.insert(id).inserted { runs.append(r) }
         }
         var jobs: [Job] = []
         for run in runs {
