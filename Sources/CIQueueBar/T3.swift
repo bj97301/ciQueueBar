@@ -85,8 +85,16 @@ final class T3Index: @unchecked Sendable {
     }
 
     /// "owner/repo" (lowercased) from the folder's git origin remote, read from .git/config; cached.
+    /// Folders macOS guards with a privacy prompt; never read inside them.
+    private static let protectedFolders: [String] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Library/Mobile Documents"]
+            .map { "\(home)/\($0)" }
+    }()
+
     private func repo(forRoot root: String) -> String? {
-        guard !root.isEmpty else { return nil }
+        guard !root.isEmpty,
+              !Self.protectedFolders.contains(where: { root == $0 || root.hasPrefix($0 + "/") }) else { return nil }
         if let cached = repoForRoot[root] { return cached }
         let result = gitConfigPath(root).flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }.flatMap(Self.originRepo)
         repoForRoot[root] = result
