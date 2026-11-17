@@ -106,6 +106,8 @@ struct Config: Decodable {
     var sshCpuHosts: [[String]]?
     /// Hours of history to rebuild from GitHub on first launch (0 disables).
     var backfillHours: Double?
+    /// Panel text size multiplier (default 2).
+    var textScale: Double?
 
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ciqueuebar")

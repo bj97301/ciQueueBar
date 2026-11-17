@@ -161,6 +161,7 @@ func renderSnapshot(to path: String, period: Period?, hover: (Bucket, Date)?) as
 }
 
 MainActor.assumeIsolated {
+    UIScale = CGFloat(min(4, max(0.5, Config.load().textScale ?? 2)))
     let args = CommandLine.arguments
     let app = NSApplication.shared
     if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {

@@ -51,6 +51,7 @@ Optional `~/.config/ciqueuebar/config.json`:
   "maxRepos": 25,
   "refreshSeconds": 60,
   "backfillHours": 24,
+  "textScale": 2,
   "sshCpuHosts": [["-F", "~/.ssh/myvm.config", "my-linux-vm"]]
 }
 ```

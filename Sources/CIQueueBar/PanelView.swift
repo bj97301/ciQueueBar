@@ -43,6 +43,14 @@ private struct HeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+/// Text and layout scale (config "textScale", default 2).
+var UIScale: CGFloat = 2
+
+extension Font {
+    /// System font scaled by UIScale.
+    static func s(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size * UIScale, weight: weight) }
+}
+
 func cores(_ c: Double) -> String { c < 10 ? String(format: "%.1f", c) : String(format: "%.0f", c) }
 
 struct PanelView: View {
@@ -71,12 +79,12 @@ struct PanelView: View {
             Divider()
             footer
         }
-        .frame(width: 640)
+        .frame(width: 600 * UIScale * 0.9)
         .coordinateSpace(name: "panel")
         .overlay(alignment: .topLeading) {
             GeometryReader { root in
                 if let h = store.hover {
-                    let w: CGFloat = 360
+                    let w: CGFloat = 360 * UIScale
                     let x = h.point.x + w + 16 > root.size.width ? max(4, h.point.x - w - 12) : h.point.x + 14
                     let y = min(max(4, h.point.y + 12), max(4, root.size.height - cardHeight - 4))
                     HoverCard(info: h)
@@ -93,7 +101,7 @@ struct PanelView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("CI Queue").font(.headline)
+            Text("CI Queue").font(.s(14, .bold))
             PeriodPicker(period: $store.period)
             Spacer()
             ForEach(visibleGroups) { g in
@@ -104,18 +112,18 @@ struct PanelView: View {
                         .foregroundStyle(.tertiary)
                     Text("\(g.running.count)").foregroundStyle(g.running.isEmpty ? Color.secondary : Color.blue)
                 }
-                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .font(.s(11, .semibold).monospacedDigit())
                 .help("\(g.bucket.rawValue): queued / running")
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 7 * UIScale).padding(.vertical, 5 * UIScale)
     }
 
     @ViewBuilder private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 7 * UIScale) {
             if let e = store.error {
                 Label(e, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange).font(.callout)
+                    .foregroundStyle(.orange).font(.s(12))
             }
             if store.updated == nil {
                 HStack { ProgressView().controlSize(.small); Text("Loading…").foregroundStyle(.secondary) }
@@ -127,13 +135,13 @@ struct PanelView: View {
                               bins: store.history.bins(bucket: g.bucket, period: store.period))
             }
         }
-        .padding(14)
+        .padding(7 * UIScale)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func iconButton(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 12))
+            .font(.s(12))
             .contentShape(Rectangle())
             .onTapGesture(perform: action)
             .help(help)
@@ -164,8 +172,8 @@ struct PanelView: View {
             iconButton("gearshape", "Open config folder", onConfig)
             iconButton("power", "Quit", onQuit)
         }
-        .font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 14).padding(.vertical, 8)
+        .font(.s(11)).foregroundStyle(.secondary)
+        .padding(.horizontal, 7 * UIScale).padding(.vertical, 4 * UIScale)
     }
 }
 
@@ -178,16 +186,16 @@ struct BucketSection: View {
         let groupCPU = store.cpu(for: group.runners)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Label(group.bucket.rawValue, systemImage: group.bucket.symbol).font(.system(size: 13, weight: .bold))
+                Label(group.bucket.rawValue, systemImage: group.bucket.symbol).font(.s(13, .bold))
                 Spacer()
                 if !group.runners.isEmpty && groupCPU > 0.05 {
-                    Text("CPU \(cores(groupCPU)) cores").font(.caption.monospacedDigit()).foregroundStyle(.green)
+                    Text("CPU \(cores(groupCPU)) cores").font(.s(11).monospacedDigit()).foregroundStyle(.green)
                 }
                 Text("\(group.queued.count) queued · \(group.running.count) running")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .font(.s(11).monospacedDigit()).foregroundStyle(.secondary)
                 if let w = group.longestWait {
                     Text("oldest wait \(shortDuration(w))")
-                        .font(.caption.monospacedDigit())
+                        .font(.s(11).monospacedDigit())
                         .foregroundStyle(w > 600 ? .red : .orange)
                 }
             }
@@ -200,10 +208,10 @@ struct BucketSection: View {
             ForEach(group.queued) { JobRow(job: $0, cpu: nil) }
             ForEach(group.running) { JobRow(job: $0, cpu: $0.runnerName.flatMap { store.cpu[$0] }) }
             if group.queued.isEmpty && group.running.isEmpty {
-                Text("Idle").font(.caption).foregroundStyle(.secondary)
+                Text("Idle").font(.s(11)).foregroundStyle(.secondary)
             }
         }
-        .padding(10)
+        .padding(5 * UIScale)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
     }
 }
@@ -217,14 +225,14 @@ struct RunnerStrip: View {
         let busy = online.filter(\.busy)
         VStack(alignment: .leading, spacing: 4) {
             Text("Runners: \(busy.count) busy · \(online.count - busy.count) idle · \(runners.count - online.count) offline")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.s(11)).foregroundStyle(.secondary)
             FlowLayout(spacing: 4) {
                 ForEach(runners) { r in
                     HStack(spacing: 3) {
-                        Circle().fill(r.online ? (r.busy ? Color.blue : Color.green) : Color.gray).frame(width: 6, height: 6)
-                        Text(r.name).font(.system(size: 10).monospaced())
+                        Circle().fill(r.online ? (r.busy ? Color.blue : Color.green) : Color.gray).frame(width: 6 * UIScale, height: 6 * UIScale)
+                        Text(r.name).font(.s(10).monospaced())
                         if let c = cpu[r.name], c >= 0.05 {
-                            Text(cores(c)).font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundStyle(.green)
+                            Text(cores(c)).font(.s(10, .semibold).monospacedDigit()).foregroundStyle(.green)
                         }
                     }
                     .padding(.horizontal, 5).padding(.vertical, 2)
@@ -243,32 +251,32 @@ struct JobRow: View {
         HStack(alignment: .top, spacing: 8) {
                 Image(systemName: job.isRunning ? "play.circle.fill" : "hourglass.circle.fill")
                     .foregroundStyle(job.isRunning ? Color.blue : Color.orange)
-                    .font(.system(size: 15))
+                    .font(.s(15))
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(job.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        Text(job.name).font(.s(12, .semibold)).lineLimit(1)
                         Spacer(minLength: 6)
                         if let c = cpu {
-                            Text("CPU \(cores(c))").font(.caption.monospacedDigit()).foregroundStyle(.green)
+                            Text("CPU \(cores(c))").font(.s(11).monospacedDigit()).foregroundStyle(.green)
                                 .help("CPU cores used by this job's processes")
                         }
-                        Text(timing).font(.caption.monospacedDigit())
+                        Text(timing).font(.s(11).monospacedDigit())
                             .foregroundStyle(job.isRunning ? Color.blue : Color.orange)
                     }
-                    Text(line2).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(line2).font(.s(11)).foregroundStyle(.secondary).lineLimit(1)
                     if let l3 = line3 {
-                        Text(l3).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                        Text(l3).font(.s(11)).foregroundStyle(.tertiary).lineLimit(1)
                     }
                     if let p = job.steps, job.isRunning {
                         HStack(spacing: 6) {
                             ZStack(alignment: .leading) {
                                 Capsule().fill(Color.primary.opacity(0.12))
                                 Capsule().fill(Color.blue)
-                                    .frame(width: 90 * CGFloat(p.done) / CGFloat(max(p.total, 1)))
+                                    .frame(width: 90 * UIScale * CGFloat(p.done) / CGFloat(max(p.total, 1)))
                             }
-                            .frame(width: 90, height: 4)
+                            .frame(width: 90 * UIScale, height: 4 * UIScale)
                             Text("step \(min(p.done + 1, p.total))/\(p.total)\(p.current.map { ": \(tidyStep($0))" } ?? "")")
-                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                .font(.s(10)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                 }
@@ -306,7 +314,7 @@ struct FlowLayout: Layout {
     var spacing: CGFloat = 4
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 560
+        let width = proposal.width ?? 560 * UIScale
         var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0
         for s in subviews {
             let sz = s.sizeThatFits(.unspecified)
@@ -339,7 +347,7 @@ struct PeriodPicker: View {
         HStack(spacing: 0) {
             ForEach(Period.allCases) { p in
                 Text(p.rawValue)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.s(10, .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 5).fill(p == period ? Color.accentColor.opacity(0.85) : .clear))
                     .foregroundStyle(p == period ? Color.white : Color.secondary)
@@ -364,7 +372,7 @@ struct HistoryChart: View {
 
     var body: some View {
         if bins.isEmpty {
-            Text("No history for this period yet").font(.caption2).foregroundStyle(.tertiary)
+            Text("No history for this period yet").font(.s(10)).foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, minHeight: 30)
         } else {
             VStack(alignment: .leading, spacing: 2) {
@@ -389,8 +397,8 @@ struct HistoryChart: View {
                     }
                 }
                 .chartXScale(domain: domain)
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: axisFormat) } }
-                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel() } }
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: axisFormat).font(.s(10)) } }
+                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel().font(.s(10)) } }
                 .chartOverlay { proxy in
                     GeometryReader { geo in
                         let origin = geo.frame(in: .named("panel")).origin
@@ -415,9 +423,9 @@ struct HistoryChart: View {
                             }
                     }
                 }
-                .frame(height: 70)
+                .frame(height: 70 * UIScale)
             }
-            .font(.caption2)
+            .font(.s(10))
         }
     }
 
@@ -431,7 +439,7 @@ struct HistoryChart: View {
 
     private func legend(_ c: Color, _ name: String, peak: Double) -> some View {
         HStack(spacing: 3) {
-            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 8, height: 8)
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 8 * UIScale, height: 8 * UIScale)
             Text("\(name) · peak \(Int(peak))").foregroundStyle(.secondary)
         }
     }
@@ -447,7 +455,7 @@ struct HoverCard: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(bin.date.formatted(info.showDay ? .dateTime.month(.abbreviated).day().hour().minute() : .dateTime.hour().minute()))
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.s(11, .bold))
                 Spacer()
                 Text(info.bucket.rawValue).foregroundStyle(.secondary)
             }
@@ -460,7 +468,7 @@ struct HoverCard: View {
                 Text("Job details weren't recorded for this time").foregroundStyle(.tertiary)
             }
         }
-        .font(.system(size: 10))
+        .font(.s(10))
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .windowBackgroundColor)).shadow(color: .black.opacity(0.5), radius: 8))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18)))
@@ -468,7 +476,7 @@ struct HoverCard: View {
 
     @ViewBuilder private func section(_ title: String, _ color: Color, _ refs: [JobRef], limit: Int) -> some View {
         if !refs.isEmpty {
-            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(color).padding(.top, 3)
+            Text(title).font(.s(10, .semibold)).foregroundStyle(color).padding(.top, 3)
             let shown = Array(refs.prefix(limit))
             // project · branch, then each workflow / job under it
             let groups = Dictionary(grouping: shown) { "\($0.r) · \($0.br ?? "?")" }
@@ -490,26 +498,38 @@ struct HoverCard: View {
 struct RunnerCPUChart: View {
     let points: [RunnerCPUPoint]
     let period: Period
+    private let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .yellow, .red, .mint, .indigo, .brown, .cyan]
+    private var labels: [String] { points.map(\.label).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } } }
 
     var body: some View {
         if Set(points.map(\.date)).count >= 2 {
             let peak = Dictionary(grouping: points, by: \.date).values.map { $0.reduce(0) { $0 + $1.cores } }.max() ?? 0
             VStack(alignment: .leading, spacing: 2) {
-                Text("CPU cores per runner · peak total \(cores(peak))").font(.caption2).foregroundStyle(.secondary)
+                Text("CPU cores per runner · peak total \(cores(peak))").font(.s(10)).foregroundStyle(.secondary)
                 Chart(points) { p in
                     AreaMark(x: .value("Time", p.date), y: .value("Cores", p.cores), stacking: .standard)
                         .foregroundStyle(by: .value("Runner", p.label))
                         .interpolationMethod(.monotone)
                 }
                 .chartXScale(domain: Date().addingTimeInterval(-period.seconds)...Date())
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()) } }
-                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel() } }
-                .chartLegend(position: .bottom, alignment: .leading, spacing: 4)
-                .frame(height: 110)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()).font(.s(10)) } }
+                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel().font(.s(10)) } }
+                .chartForegroundStyleScale(domain: labels, range: labels.indices.map { palette[$0 % palette.count] })
+                .chartLegend(.hidden)
+                .frame(height: 110 * UIScale)
+                FlowLayout(spacing: 4 * UIScale) {
+                    ForEach(Array(labels.enumerated()), id: \.offset) { i, l in
+                        HStack(spacing: 2 * UIScale) {
+                            Circle().fill(palette[i % palette.count]).frame(width: 6 * UIScale, height: 6 * UIScale)
+                            Text(l)
+                        }
+                    }
+                }
+                .font(.s(10))
             }
-            .font(.caption2)
+            .font(.s(10))
         } else {
-            Text("CPU per runner: collecting (one point per minute)").font(.caption2).foregroundStyle(.tertiary)
+            Text("CPU per runner: collecting (one point per minute)").font(.s(10)).foregroundStyle(.tertiary)
         }
     }
 }
