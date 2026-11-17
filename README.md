@@ -2,13 +2,19 @@
 
 A macOS menu bar app that shows your GitHub Actions job queue, grouped by where the jobs run:
 
-- **Mac**: self-hosted runners with a macOS label
+- **Mac**: self-hosted macOS runners
+- **Linux**: self-hosted Linux runners
 - **Blacksmith**: `blacksmith-*` runners
 - **GitHub**: GitHub-hosted `ubuntu-*`, `windows-*`, `macos-*`
-- **Self-hosted**: other self-hosted runners
 - **Other**: anything else
 
-The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Click a job in the menu to open it on GitHub.
+Jobs are matched to your registered self-hosted runners by label, so custom labels like `electro-local-mac` land in the right group.
+
+![Panel](docs/panel.png)
+
+The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Click it for a panel with every queued and running job (repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step) plus your self-hosted runners and whether each is busy, idle or offline. Click a job to open it on GitHub.
+
+`CIQueueBar --snapshot out.png` renders that panel with live data to a PNG.
 
 ## Install
 

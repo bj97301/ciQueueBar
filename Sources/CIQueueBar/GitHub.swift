@@ -1,68 +1,19 @@
 import Foundation
 
-struct Job: Hashable {
-    let repo: String
-    let workflow: String
-    let name: String
-    let status: String   // queued | in_progress | waiting | pending
-    let labels: [String]
-    let url: URL?
-    let createdAt: Date?
-    let runnerName: String?
-}
-
-enum Bucket: String, CaseIterable {
-    case mac = "Mac"
-    case blacksmith = "Blacksmith"
-    case github = "GitHub"
-    case selfHosted = "Self-hosted"
-    case other = "Other"
-
-    var short: String {
-        switch self {
-        case .mac: return "Mac"
-        case .blacksmith: return "BS"
-        case .github: return "GH"
-        case .selfHosted: return "SH"
-        case .other: return "?"
-        }
-    }
-
-    static func classify(_ labels: [String]) -> Bucket {
-        let l = labels.map { $0.lowercased() }
-        if l.contains(where: { $0.hasPrefix("blacksmith") }) { return .blacksmith }
-        if l.contains("self-hosted") {
-            return l.contains(where: { $0.contains("macos") || $0 == "mac" || $0 == "osx" }) ? .mac : .selfHosted
-        }
-        if l.contains(where: { $0.hasPrefix("ubuntu") || $0.hasPrefix("windows") || $0.hasPrefix("macos") }) {
-            return .github
-        }
-        return .other
-    }
-}
-
-struct Config: Decodable {
-    /// Explicit "owner/repo" list. When empty, repos pushed within `recentDays` are scanned.
-    var repos: [String]?
-    var recentDays: Double?
-    var maxRepos: Int?
-    var refreshSeconds: Double?
-
-    static func load() -> Config {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/ciqueuebar/config.json")
-        guard let data = try? Data(contentsOf: url),
-              let c = try? JSONDecoder().decode(Config.self, from: data) else { return Config() }
-        return c
-    }
-}
-
-final class GitHubClient {
+final class GitHubClient: @unchecked Sendable {
     private var token: String?
     private let session = URLSession(configuration: .ephemeral)
-    private let iso = ISO8601DateFormatter()
+    private let lock = NSLock()
+    private(set) var rateRemaining: Int?
+    private(set) var rateLimit: Int?
+
+    private static func parseDate(_ s: Any?) -> Date? {
+        guard let s = s as? String else { return nil }
+        return ISO8601DateFormatter().date(from: s)
+    }
 
     private func loadToken() throws -> String {
+        lock.lock(); defer { lock.unlock() }
         if let t = token { return t }
         if let env = ProcessInfo.processInfo.environment["GITHUB_TOKEN"], !env.isEmpty { token = env; return env }
         for path in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] where FileManager.default.isExecutableFile(atPath: path) {
@@ -87,10 +38,16 @@ final class GitHubClient {
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("CIQueueBar", forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await session.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+        if let http = resp as? HTTPURLResponse {
+            lock.withLock {
+            if let r = (http.value(forHTTPHeaderField: "x-ratelimit-remaining")).flatMap(Int.init) { rateRemaining = r }
+            if let r = (http.value(forHTTPHeaderField: "x-ratelimit-limit")).flatMap(Int.init) { rateLimit = r }
             if http.statusCode == 401 { token = nil }
-            throw NSError(domain: "CIQueueBar", code: http.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "GitHub \(http.statusCode) for \(path)"])
+            }
+            if http.statusCode >= 400 {
+                throw NSError(domain: "CIQueueBar", code: http.statusCode,
+                              userInfo: [NSLocalizedDescriptionKey: "GitHub \(http.statusCode) for \(path)"])
+            }
         }
         return try JSONSerialization.jsonObject(with: data)
     }
@@ -101,46 +58,102 @@ final class GitHubClient {
         let arr = try await get("/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member") as? [[String: Any]] ?? []
         return arr.compactMap { r -> String? in
             guard let name = r["full_name"] as? String,
-                  let pushed = (r["pushed_at"] as? String).flatMap(iso.date(from:)),
-                  pushed > cutoff else { return nil }
+                  let pushed = Self.parseDate(r["pushed_at"]), pushed > cutoff else { return nil }
             return name
         }.prefix(config.maxRepos ?? 25).map { $0 }
     }
 
     func activeJobs(repo: String) async throws -> [Job] {
         var runs: [[String: Any]] = []
+        var seen = Set<Int>()
         for status in ["queued", "in_progress", "waiting", "pending"] {
             let obj = try await get("/repos/\(repo)/actions/runs?status=\(status)&per_page=50") as? [String: Any]
-            runs += obj?["workflow_runs"] as? [[String: Any]] ?? []
+            for r in obj?["workflow_runs"] as? [[String: Any]] ?? [] {
+                if let id = r["id"] as? Int, seen.insert(id).inserted { runs.append(r) }
+            }
         }
         var jobs: [Job] = []
         for run in runs {
             guard let id = run["id"] as? Int else { continue }
-            let wf = run["name"] as? String ?? "workflow"
+            let commit = (run["head_commit"] as? [String: Any])?["message"] as? String
+            let actor = ((run["triggering_actor"] ?? run["actor"]) as? [String: Any])?["login"] as? String
             let obj = try await get("/repos/\(repo)/actions/runs/\(id)/jobs?filter=latest&per_page=100") as? [String: Any]
             for j in obj?["jobs"] as? [[String: Any]] ?? [] {
                 let status = j["status"] as? String ?? ""
                 guard status != "completed" else { continue }
+                let steps = j["steps"] as? [[String: Any]] ?? []
+                let progress: StepProgress? = steps.isEmpty ? nil : StepProgress(
+                    done: steps.filter { ($0["status"] as? String) == "completed" }.count,
+                    total: steps.count,
+                    current: steps.first { ($0["status"] as? String) == "in_progress" }?["name"] as? String)
                 jobs.append(Job(
-                    repo: repo, workflow: wf,
+                    id: j["id"] as? Int ?? 0,
+                    repo: repo,
+                    workflow: run["name"] as? String ?? "workflow",
                     name: j["name"] as? String ?? "job",
                     status: status,
                     labels: j["labels"] as? [String] ?? [],
                     url: (j["html_url"] as? String).flatMap(URL.init(string:)),
-                    createdAt: (j["created_at"] as? String).flatMap(iso.date(from:)),
-                    runnerName: j["runner_name"] as? String))
+                    createdAt: Self.parseDate(j["created_at"]),
+                    startedAt: status == "in_progress" ? Self.parseDate(j["started_at"]) : nil,
+                    runnerName: (j["runner_name"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    runNumber: run["run_number"] as? Int,
+                    runAttempt: run["run_attempt"] as? Int,
+                    branch: run["head_branch"] as? String,
+                    event: run["event"] as? String,
+                    actor: actor,
+                    commitTitle: commit?.split(separator: "\n").first.map(String.init),
+                    steps: progress))
             }
         }
         return jobs
     }
 
-    func allActiveJobs(config: Config) async throws -> [Job] {
+    /// Self-hosted runners for each owner. Org endpoint first; personal accounts fall back to per-repo.
+    func runners(owners: Set<String>, repos: [String]) async -> [Runner] {
+        var out: [Runner] = []
+        for owner in owners.sorted() {
+            if let obj = try? await get("/orgs/\(owner)/actions/runners?per_page=100") as? [String: Any] {
+                out += parseRunners(obj, owner: owner)
+                continue
+            }
+            for repo in repos where repo.hasPrefix(owner + "/") {
+                if let obj = try? await get("/repos/\(repo)/actions/runners?per_page=100") as? [String: Any] {
+                    out += parseRunners(obj, owner: repo)
+                }
+            }
+        }
+        var seen = Set<String>()
+        return out.filter { seen.insert($0.name).inserted }
+    }
+
+    private func parseRunners(_ obj: [String: Any], owner: String) -> [Runner] {
+        (obj["runners"] as? [[String: Any]] ?? []).map { r in
+            Runner(owner: owner,
+                   name: r["name"] as? String ?? "runner",
+                   os: r["os"] as? String ?? "",
+                   online: (r["status"] as? String) == "online",
+                   busy: r["busy"] as? Bool ?? false,
+                   labels: (r["labels"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
+        }
+    }
+
+    func snapshot(config: Config) async throws -> Snapshot {
         let repos = try await repos(config: config)
-        return try await withThrowingTaskGroup(of: [Job].self) { group in
+        async let jobs: [Job] = withTaskGroup(of: [Job].self) { group in
             for r in repos { group.addTask { (try? await self.activeJobs(repo: r)) ?? [] } }
             var all: [Job] = []
-            for try await j in group { all += j }
+            for await j in group { all += j }
             return all
         }
+        let owners = Set(repos.compactMap { $0.split(separator: "/").first.map(String.init) })
+        async let runners = runners(owners: owners, repos: repos)
+        var s = Snapshot()
+        s.jobs = await jobs
+        s.runners = await runners
+        s.repoCount = repos.count
+        s.rateRemaining = rateRemaining
+        s.rateLimit = rateLimit
+        return s
     }
 }
