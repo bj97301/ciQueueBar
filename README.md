@@ -17,7 +17,9 @@ The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶)
 - every queued and running job: repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step, and **CPU cores the job is using**
 - your self-hosted runners and whether each is busy, idle or offline, with live CPU
 - **history per runner type**: queued and running jobs over 1H / 6H / 1D / 7D / 30D, plus a stacked chart of **CPU per runner**
-- **hover the queue chart** to see which project, branch and workflow / job were queued and running at that moment
+- a **CPU** section at the top: running jobs ranked by CPU right now (project · branch · workflow / job · runner), a stacked chart of CPU by repo, branch, workflow or job, and the top ones for the period in core-hours
+- **every chart has a hover card**: the queue chart lists queued and running jobs; CPU charts list each runner or group with its cores and the job it was running
+- hover the queue chart to see which project, branch and workflow / job were queued and running at that moment
 
 ![Hover](docs/hover.png)
 
@@ -28,7 +30,7 @@ Click a job to open it on GitHub. History lives in `~/Library/Application Suppor
 - **Local runners** (on the Mac running the app): CPU of each `Runner.Worker` process and everything under it, plus detached processes whose path is inside a `.../slots/<runner>/` folder. The runner name comes from the runner's `.runner` file.
 - **Runners in a Linux VM or another host**: add the host to `sshCpuHosts`. The app runs `systemctl show 'actions.runner.*'` over ssh every 10 seconds and turns each service's CPUUsageNSec into cores. Jobs in Docker containers aren't counted (they run in the Docker daemon's cgroup).
 
-`CIQueueBar --snapshot out.png [--period 1D] [--hover linux <unix time>]` renders that panel with live data to a PNG.
+`CIQueueBar --snapshot out.png [--period 1D] [--group Repo|Branch|Workflow|Job] [--hover queue-linux|cpu-linux|cpu-group <unix time>]` renders that panel with live data to a PNG.
 
 ## Install
 
@@ -51,7 +53,7 @@ Optional `~/.config/ciqueuebar/config.json`:
   "maxRepos": 25,
   "refreshSeconds": 60,
   "backfillHours": 24,
-  "textScale": 2,
+  "textScale": 1.5,
   "sshCpuHosts": [["-F", "~/.ssh/myvm.config", "my-linux-vm"]]
 }
 ```

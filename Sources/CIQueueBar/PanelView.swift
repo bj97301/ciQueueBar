@@ -13,24 +13,21 @@ final class Store: ObservableObject {
     @Published var maxHeight: CGFloat = 900
     /// Hover card shown over the whole panel.
     @Published var hover: HoverInfo?
-    /// Snapshot mode only: show the hover card for this bucket at this time.
-    var pinnedHover: (bucket: Bucket, date: Date)?
+    /// Snapshot mode only: show the hover card for this chart id at this time.
+    var pinnedHover: (chart: String, date: Date)?
+    @Published var cpuGroup: CPUGroup = CPUGroup(rawValue: UserDefaults.standard.string(forKey: "cpuGroup") ?? "") ?? .repo {
+        didSet { if persist { UserDefaults.standard.set(cpuGroup.rawValue, forKey: "cpuGroup") } }
+    }
     @Published var period: Period = Period(rawValue: UserDefaults.standard.string(forKey: "period") ?? "") ?? .h6 {
-        didSet { UserDefaults.standard.set(period.rawValue, forKey: "period") }
+        didSet { if persist { UserDefaults.standard.set(period.rawValue, forKey: "period") } }
     }
     let history = HistoryStore()
+    /// Snapshot mode turns this off so its settings don't change the app's.
+    var persist = true
 
     func cpu(for runners: [Runner]) -> Double {
         runners.reduce(0) { $0 + (cpu[$1.name] ?? 0) }
     }
-}
-
-struct HoverInfo {
-    let bucket: Bucket
-    let bin: Bin
-    let showDay: Bool
-    /// Cursor position in the panel's coordinate space.
-    let point: CGPoint
 }
 
 private struct CardHeightKey: PreferenceKey {
@@ -43,8 +40,8 @@ private struct HeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// Text and layout scale (config "textScale", default 2).
-var UIScale: CGFloat = 2
+/// Text and layout scale (config "textScale", default 1.5).
+var UIScale: CGFloat = 1.5
 
 extension Font {
     /// System font scaled by UIScale.
@@ -102,7 +99,7 @@ struct PanelView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Text("CI Queue").font(.s(14, .bold))
-            PeriodPicker(period: $store.period)
+            Segmented(value: $store.period)
             Spacer()
             ForEach(visibleGroups) { g in
                 HStack(spacing: 4) {
@@ -130,6 +127,7 @@ struct PanelView: View {
             } else if visibleGroups.isEmpty {
                 Text("No queued or running jobs").foregroundStyle(.secondary)
             }
+            if !store.snapshot.runners.isEmpty { CPUSection(store: store) }
             ForEach(visibleGroups) { g in
                 BucketSection(group: g, store: store,
                               bins: store.history.bins(bucket: g.bucket, period: store.period))
@@ -201,8 +199,9 @@ struct BucketSection: View {
             }
             HistoryChart(bins: bins, period: store.period, bucket: group.bucket, store: store)
             if !group.runners.isEmpty {
-                RunnerCPUChart(points: store.history.runnerCPU(runners: group.runners.map(\.name), period: store.period),
-                               period: store.period)
+                StackedCPUChart(id: "cpu-\(group.bucket.key)", title: "CPU cores per runner",
+                                points: store.history.runnerCPU(runners: group.runners.map(\.name), period: store.period),
+                                period: store.period, store: store)
             }
             if !group.runners.isEmpty { RunnerStrip(runners: group.runners, cpu: store.cpu) }
             ForEach(group.queued) { JobRow(job: $0, cpu: nil) }
@@ -340,196 +339,23 @@ func tidyStep(_ s: String) -> String {
     s.replacingOccurrences(of: "@([0-9a-f]{7})[0-9a-f]{33}", with: "@$1", options: .regularExpression)
 }
 
-struct PeriodPicker: View {
-    @Binding var period: Period
+/// Small segmented control drawn with plain views (renders in snapshots too).
+struct Segmented<T: Hashable & Identifiable & CaseIterable & RawRepresentable>: View where T.RawValue == String, T.AllCases: RandomAccessCollection {
+    @Binding var value: T
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(Period.allCases) { p in
+            ForEach(T.allCases) { p in
                 Text(p.rawValue)
                     .font(.s(10, .semibold))
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(p == period ? Color.accentColor.opacity(0.85) : .clear))
-                    .foregroundStyle(p == period ? Color.white : Color.secondary)
+                    .padding(.horizontal, 4 * UIScale).padding(.vertical, 1.5 * UIScale)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(p == value ? Color.accentColor.opacity(0.85) : .clear))
+                    .foregroundStyle(p == value ? Color.white : Color.secondary)
                     .contentShape(Rectangle())
-                    .onTapGesture { period = p }
+                    .onTapGesture { value = p }
             }
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
-    }
-}
-
-/// Queued (orange area) and running (blue line) over the chosen period. Hover for the jobs at that moment.
-struct HistoryChart: View {
-    let bins: [Bin]
-    let period: Period
-    let bucket: Bucket
-    @ObservedObject var store: Store
-
-    private var domain: ClosedRange<Date> { Date().addingTimeInterval(-period.seconds)...Date() }
-    private var hovered: Bin? { store.hover?.bucket == bucket ? store.hover?.bin : nil }
-
-    var body: some View {
-        if bins.isEmpty {
-            Text("No history for this period yet").font(.s(10)).foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, minHeight: 30)
-        } else {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 10) {
-                    legend(.orange, "queued", peak: bins.map(\.queued).max() ?? 0)
-                    legend(.blue, "running", peak: bins.map(\.running).max() ?? 0)
-                    Spacer()
-                    Text("hover for jobs").foregroundStyle(.tertiary)
-                }
-                Chart {
-                    ForEach(bins) { b in
-                        AreaMark(x: .value("Time", b.date), y: .value("Queued", b.queued))
-                            .foregroundStyle(Color.orange.opacity(0.45))
-                            .interpolationMethod(.stepCenter)
-                        LineMark(x: .value("Time", b.date), y: .value("Jobs", b.running), series: .value("s", "running"))
-                            .foregroundStyle(Color.blue)
-                            .interpolationMethod(.stepCenter)
-                            .lineStyle(StrokeStyle(lineWidth: 1.5))
-                    }
-                    if let h = hovered {
-                        RuleMark(x: .value("Time", h.date)).foregroundStyle(Color.primary.opacity(0.5))
-                    }
-                }
-                .chartXScale(domain: domain)
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: axisFormat).font(.s(10)) } }
-                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel().font(.s(10)) } }
-                .chartOverlay { proxy in
-                    GeometryReader { geo in
-                        let origin = geo.frame(in: .named("panel")).origin
-                        let plotX = proxy.plotFrame.map { geo[$0].origin.x } ?? 0
-                        Rectangle().fill(Color.clear).contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                switch phase {
-                                case .active(let p):
-                                    guard let d: Date = proxy.value(atX: p.x - plotX), let bin = nearest(d) else { return }
-                                    store.hover = HoverInfo(bucket: bucket, bin: bin, showDay: period.seconds > 86400,
-                                                            point: CGPoint(x: origin.x + p.x, y: origin.y + p.y))
-                                case .ended:
-                                    if store.hover?.bucket == bucket { store.hover = nil }
-                                }
-                            }
-                            .onAppear {
-                                // Snapshot mode: pin a hover card.
-                                guard let pin = store.pinnedHover, pin.bucket == bucket, let bin = nearest(pin.date),
-                                      let x = proxy.position(forX: pin.date) else { return }
-                                store.hover = HoverInfo(bucket: bucket, bin: bin, showDay: period.seconds > 86400,
-                                                        point: CGPoint(x: origin.x + plotX + x, y: origin.y + 30))
-                            }
-                    }
-                }
-                .frame(height: 70 * UIScale)
-            }
-            .font(.s(10))
-        }
-    }
-
-    private func nearest(_ d: Date) -> Bin? {
-        bins.min { abs($0.date.timeIntervalSince(d)) < abs($1.date.timeIntervalSince(d)) }
-    }
-
-    private var axisFormat: Date.FormatStyle {
-        period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()
-    }
-
-    private func legend(_ c: Color, _ name: String, peak: Double) -> some View {
-        HStack(spacing: 3) {
-            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 8 * UIScale, height: 8 * UIScale)
-            Text("\(name) · peak \(Int(peak))").foregroundStyle(.secondary)
-        }
-    }
-}
-
-/// Tooltip listing the queued and running jobs at the hovered moment, grouped by project and branch.
-struct HoverCard: View {
-    let info: HoverInfo
-    private let maxJobs = 12
-
-    var body: some View {
-        let bin = info.bin
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(bin.date.formatted(info.showDay ? .dateTime.month(.abbreviated).day().hour().minute() : .dateTime.hour().minute()))
-                    .font(.s(11, .bold))
-                Spacer()
-                Text(info.bucket.rawValue).foregroundStyle(.secondary)
-            }
-            if let j = bin.jobs {
-                section("\(j.q.count) queued", .orange, j.q, limit: maxJobs)
-                section("\(j.run.count) running", .blue, j.run, limit: max(3, maxJobs - j.q.count))
-                if j.q.isEmpty && j.run.isEmpty { Text("Nothing queued or running").foregroundStyle(.secondary) }
-            } else {
-                Text("\(Int(bin.queued)) queued · \(Int(bin.running)) running").foregroundStyle(.secondary)
-                Text("Job details weren't recorded for this time").foregroundStyle(.tertiary)
-            }
-        }
-        .font(.s(10))
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .windowBackgroundColor)).shadow(color: .black.opacity(0.5), radius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18)))
-    }
-
-    @ViewBuilder private func section(_ title: String, _ color: Color, _ refs: [JobRef], limit: Int) -> some View {
-        if !refs.isEmpty {
-            Text(title).font(.s(10, .semibold)).foregroundStyle(color).padding(.top, 3)
-            let shown = Array(refs.prefix(limit))
-            // project · branch, then each workflow / job under it
-            let groups = Dictionary(grouping: shown) { "\($0.r) · \($0.br ?? "?")" }
-            let order = shown.map { "\($0.r) · \($0.br ?? "?")" }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-            ForEach(order, id: \.self) { key in
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(key).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
-                    ForEach(Array((groups[key] ?? []).enumerated()), id: \.offset) { _, r in
-                        Text("\(r.w) / \(r.n)").foregroundStyle(.secondary).lineLimit(1).padding(.leading, 8)
-                    }
-                }
-            }
-            if refs.count > shown.count { Text("+\(refs.count - shown.count) more").foregroundStyle(.tertiary) }
-        }
-    }
-}
-
-/// Stacked CPU cores per runner (agent) over the period.
-struct RunnerCPUChart: View {
-    let points: [RunnerCPUPoint]
-    let period: Period
-    private let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .yellow, .red, .mint, .indigo, .brown, .cyan]
-    private var labels: [String] { points.map(\.label).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } } }
-
-    var body: some View {
-        if Set(points.map(\.date)).count >= 2 {
-            let peak = Dictionary(grouping: points, by: \.date).values.map { $0.reduce(0) { $0 + $1.cores } }.max() ?? 0
-            VStack(alignment: .leading, spacing: 2) {
-                Text("CPU cores per runner · peak total \(cores(peak))").font(.s(10)).foregroundStyle(.secondary)
-                Chart(points) { p in
-                    AreaMark(x: .value("Time", p.date), y: .value("Cores", p.cores), stacking: .standard)
-                        .foregroundStyle(by: .value("Runner", p.label))
-                        .interpolationMethod(.monotone)
-                }
-                .chartXScale(domain: Date().addingTimeInterval(-period.seconds)...Date())
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()).font(.s(10)) } }
-                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel().font(.s(10)) } }
-                .chartForegroundStyleScale(domain: labels, range: labels.indices.map { palette[$0 % palette.count] })
-                .chartLegend(.hidden)
-                .frame(height: 110 * UIScale)
-                FlowLayout(spacing: 4 * UIScale) {
-                    ForEach(Array(labels.enumerated()), id: \.offset) { i, l in
-                        HStack(spacing: 2 * UIScale) {
-                            Circle().fill(palette[i % palette.count]).frame(width: 6 * UIScale, height: 6 * UIScale)
-                            Text(l)
-                        }
-                    }
-                }
-                .font(.s(10))
-            }
-            .font(.s(10))
-        } else {
-            Text("CPU per runner: collecting (one point per minute)").font(.s(10)).foregroundStyle(.tertiary)
-        }
     }
 }

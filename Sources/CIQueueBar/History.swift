@@ -8,6 +8,42 @@ struct Sample: Codable {
     var c: [String: Double]? = nil
     /// Per bucket key: which jobs were queued / running.
     var j: [String: JobRefs]? = nil
+    /// Mean CPU per running job since the previous sample.
+    var u: [JobCPU]? = nil
+}
+
+struct JobCPU: Codable {
+    let r: String       // repo (short)
+    let br: String?     // branch
+    let w: String       // workflow
+    let n: String       // job
+    let rn: String      // runner
+    let c: Double       // cores
+
+    var text: String { "\(r) · \(br ?? "?") · \(w) / \(n)" }
+}
+
+enum CPUGroup: String, CaseIterable, Identifiable {
+    case repo = "Repo", branch = "Branch", workflow = "Workflow", job = "Job"
+    var id: String { rawValue }
+    var plural: String { self == .branch ? "branches" : rawValue.lowercased() + "s" }
+
+    func key(r: String, br: String?, w: String, n: String) -> String {
+        switch self {
+        case .repo: return r
+        case .branch: return "\(r) · \(br ?? "?")"
+        case .workflow: return "\(r) · \(w)"
+        case .job: return "\(r) · \(br ?? "?") · \(w) / \(n)"
+        }
+    }
+    func key(_ j: JobCPU) -> String { key(r: j.r, br: j.br, w: j.w, n: j.n) }
+}
+
+struct GroupUsage: Identifiable {
+    var id: String { name }
+    let name: String
+    let coreHours: Double
+    let peak: Double
 }
 
 struct JobRef: Codable, Hashable {
@@ -30,6 +66,8 @@ struct RunnerCPUPoint: Identifiable {
     let runner: String
     let label: String
     let cores: Double
+    /// What the runner was doing (job) at that time, when known.
+    var detail: String? = nil
 }
 
 enum Period: String, CaseIterable, Identifiable {
@@ -112,21 +150,62 @@ final class HistoryStore {
         let width = period.seconds / Double(count)
         var n = [Int](repeating: 0, count: count)
         var sums: [String: [Double]] = [:]
+        var jobs: [String: [String?]] = [:]
         let wanted = Set(runners)
         for s in samples where s.t >= start && s.t <= end {
             guard let c = s.c else { continue }
             let i = min(count - 1, Int((s.t - start) / width))
             n[i] += 1
             for (r, v) in c where wanted.contains(r) { sums[r, default: [Double](repeating: 0, count: count)][i] += v }
+            for u in s.u ?? [] where wanted.contains(u.rn) { jobs[u.rn, default: [String?](repeating: nil, count: count)][i] = u.text }
         }
         let active = sums.filter { $0.value.contains { $0 > 0 } }.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         let labels = shortLabels(active)
         var out: [RunnerCPUPoint] = []
         for i in 0..<count where n[i] > 0 {
             let d = Date(timeIntervalSince1970: start + (Double(i) + 0.5) * width)
-            for r in active { out.append(RunnerCPUPoint(date: d, runner: r, label: labels[r] ?? r, cores: sums[r]![i] / Double(n[i]))) }
+            for r in active {
+                out.append(RunnerCPUPoint(date: d, runner: r, label: labels[r] ?? r, cores: sums[r]![i] / Double(n[i]),
+                                          detail: jobs[r]?[i] ?? nil))
+            }
         }
         return out
+    }
+
+    /// CPU per repo / branch / workflow / job: stacked points for the top groups and a ranking by core-hours.
+    func cpuByGroup(_ group: CPUGroup, period: Period, count: Int = 120, top: Int = 8, now: Date = Date())
+        -> (points: [RunnerCPUPoint], ranking: [GroupUsage]) {
+        let end = now.timeIntervalSince1970, start = end - period.seconds
+        let width = period.seconds / Double(count)
+        let inRange = samples.filter { $0.t >= start && $0.t <= end && $0.c != nil }
+        var n = [Int](repeating: 0, count: count)
+        var sums: [String: [Double]] = [:]
+        var totals: [String: Double] = [:], peaks: [String: Double] = [:]
+        for (k, s) in inRange.enumerated() {
+            let i = min(count - 1, Int((s.t - start) / width))
+            n[i] += 1
+            // Each sample covers the time until the next one (capped at 5 minutes).
+            let dt = k + 1 < inRange.count ? min(300, inRange[k + 1].t - s.t) : 60
+            var perKey: [String: Double] = [:]
+            for u in s.u ?? [] { perKey[group.key(u), default: 0] += u.c }
+            for (key, c) in perKey {
+                sums[key, default: [Double](repeating: 0, count: count)][i] += c
+                totals[key, default: 0] += c * dt / 3600
+                peaks[key] = max(peaks[key] ?? 0, c)
+            }
+        }
+        let ranked = totals.sorted { $0.value > $1.value }
+        let topKeys = ranked.prefix(top).map(\.key)
+        let ranking = ranked.prefix(12).map { GroupUsage(name: $0.key, coreHours: $0.value, peak: peaks[$0.key] ?? 0) }
+        var out: [RunnerCPUPoint] = []
+        for i in 0..<count where n[i] > 0 {
+            let d = Date(timeIntervalSince1970: start + (Double(i) + 0.5) * width)
+            var other = 0.0
+            for (key, v) in sums where !topKeys.contains(key) { other += v[i] }
+            for key in topKeys { out.append(RunnerCPUPoint(date: d, runner: key, label: key, cores: (sums[key]?[i] ?? 0) / Double(n[i]))) }
+            if sums.count > topKeys.count { out.append(RunnerCPUPoint(date: d, runner: "other", label: "other", cores: other / Double(n[i]))) }
+        }
+        return (out, ranking)
     }
 
     /// Up to `count` bins covering the period. Peak queued/running per bin, mean CPU.

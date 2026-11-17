@@ -112,7 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             func ref(_ j: Job) -> JobRef { JobRef(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name) }
             refs[g.bucket.key] = JobRefs(q: g.queued.map(ref), run: g.running.map(ref))
         }
-        store.history.append(Sample(t: Date().timeIntervalSince1970, b: b, c: mean.filter { $0.value >= 0.05 }, j: refs))
+        // Attribute each runner's CPU to the job it's running.
+        let usage: [JobCPU] = groups.flatMap(\.running).compactMap { j in
+            guard let rn = j.runnerName, let c = mean[rn], c >= 0.02 else { return nil }
+            return JobCPU(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name, rn: rn, c: c)
+        }
+        store.history.append(Sample(t: Date().timeIntervalSince1970, b: b, c: mean.filter { $0.value >= 0.05 }, j: refs, u: usage))
         store.historyVersion += 1
     }
 
@@ -137,8 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
 /// `CIQueueBar --snapshot out.png [--period 1H|6H|1D|7D|30D]` renders the panel with live data to a PNG and exits.
 @MainActor
-func renderSnapshot(to path: String, period: Period?, hover: (Bucket, Date)?) async {
+func renderSnapshot(to path: String, period: Period?, group: CPUGroup?, hover: (String, Date)?) async {
     let store = Store()
+    store.persist = false
+    if let group { store.cpuGroup = group }
     store.pinnedHover = hover
     if let period { store.period = period }
     let config = Config.load()
@@ -161,19 +168,20 @@ func renderSnapshot(to path: String, period: Period?, hover: (Bucket, Date)?) as
 }
 
 MainActor.assumeIsolated {
-    UIScale = CGFloat(min(4, max(0.5, Config.load().textScale ?? 2)))
+    UIScale = CGFloat(min(4, max(0.5, Config.load().textScale ?? 1.5)))
     let args = CommandLine.arguments
     let app = NSApplication.shared
     if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
         let period = args.firstIndex(of: "--period").flatMap { $0 + 1 < args.count ? Period(rawValue: args[$0 + 1]) : nil }
         app.setActivationPolicy(.prohibited)
-        // --hover <bucket key> <unix time>: show that chart's hover card at that moment
-        let hover: (Bucket, Date)? = args.firstIndex(of: "--hover").flatMap { i in
-            guard i + 2 < args.count, let b = Bucket.allCases.first(where: { $0.key == args[i + 1] }),
-                  let t = Double(args[i + 2]) else { return nil }
-            return (b, Date(timeIntervalSince1970: t))
+        // --hover <chart id> <unix time>: show that chart's hover card at that moment.
+        // Chart ids: queue-<bucket>, cpu-<bucket>, cpu-group (bucket: mac, linux, blacksmith, github, other).
+        let hover: (String, Date)? = args.firstIndex(of: "--hover").flatMap { i in
+            guard i + 2 < args.count, let t = Double(args[i + 2]) else { return nil }
+            return (args[i + 1], Date(timeIntervalSince1970: t))
         }
-        Task { await renderSnapshot(to: args[i + 1], period: period, hover: hover) }
+        let group = args.firstIndex(of: "--group").flatMap { $0 + 1 < args.count ? CPUGroup(rawValue: args[$0 + 1]) : nil }
+        Task { await renderSnapshot(to: args[i + 1], period: period, group: group, hover: hover) }
         app.run()
     } else {
         let delegate = AppDelegate()
