@@ -34,3 +34,7 @@ Optional `~/.config/ciqueuebar/config.json`:
 ```
 
 Without `repos`, it scans your repos (owned, collaborator, org member) pushed within `recentDays`.
+
+## Bartender
+
+Bartender files new menu bar items under **Always Hide**. Move CIQueueBar to **Shown** in Bartender's Menu Bar Layout, or drag it out of the hidden section.
