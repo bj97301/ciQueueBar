@@ -32,7 +32,7 @@ final class GitHubClient: @unchecked Sendable {
         throw NSError(domain: "CIQueueBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "No GitHub token. Run `gh auth login` or set GITHUB_TOKEN."])
     }
 
-    private func get(_ path: String) async throws -> Any {
+    func get(_ path: String) async throws -> Any {
         var req = URLRequest(url: URL(string: "https://api.github.com" + path)!)
         req.setValue("Bearer \(try loadToken())", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -135,6 +135,61 @@ final class GitHubClient: @unchecked Sendable {
                    busy: r["busy"] as? Bool ?? false,
                    labels: (r["labels"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String })
         }
+    }
+
+    /// Rebuilds per-minute queued/running counts from recent runs' job timestamps.
+    func backfill(config: Config, runners: [Runner]) async -> [Sample] {
+        let hours = config.backfillHours ?? 24
+        guard hours > 0, let repos = try? await repos(config: config) else { return [] }
+        let since = Date().addingTimeInterval(-hours * 3600)
+        let day = ISO8601DateFormatter.string(from: since, timeZone: .gmt, formatOptions: [.withFullDate])
+        struct Span { let bucket: Bucket; let created: Date; let started: Date?; let ended: Date? }
+        let spans: [Span] = await withTaskGroup(of: [Span].self) { group in
+            for repo in repos {
+                group.addTask {
+                    var out: [Span] = []
+                    var runs: [[String: Any]] = []
+                    for page in 1...3 {
+                        let obj = try? await self.get("/repos/\(repo)/actions/runs?per_page=100&page=\(page)&created=%3E%3D\(day)") as? [String: Any]
+                        let batch = obj?["workflow_runs"] as? [[String: Any]] ?? []
+                        runs += batch.filter { (Self.parseDate($0["updated_at"]) ?? .distantFuture) >= since }
+                        if batch.count < 100 { break }
+                    }
+                    for run in runs {
+                        guard let id = run["id"] as? Int,
+                              let jobs = try? await self.get("/repos/\(repo)/actions/runs/\(id)/jobs?filter=all&per_page=100") as? [String: Any]
+                        else { continue }
+                        for j in jobs["jobs"] as? [[String: Any]] ?? [] {
+                            guard let created = Self.parseDate(j["created_at"]) else { continue }
+                            out.append(Span(bucket: Bucket.classify(j["labels"] as? [String] ?? [], runners: runners),
+                                            created: created,
+                                            // queued jobs report started_at == created_at
+                                            started: ["queued", "waiting", "pending"].contains(j["status"] as? String ?? "") ? nil : Self.parseDate(j["started_at"]),
+                                            ended: Self.parseDate(j["completed_at"])))
+                        }
+                    }
+                    return out
+                }
+            }
+            var all: [Span] = []
+            for await s in group { all += s }
+            return all
+        }
+        var samples: [Sample] = []
+        var t = since
+        let now = Date()
+        while t < now {
+            var b: [String: [Double]] = [:]
+            for s in spans where s.created <= t && (s.ended ?? now) > t {
+                var v = b[s.bucket.key] ?? [0, 0, -1]
+                if let st = s.started, st <= t { v[1] += 1 } else { v[0] += 1 }
+                b[s.bucket.key] = v
+            }
+            for bucket in Bucket.allCases where b[bucket.key] == nil { b[bucket.key] = [0, 0, -1] }
+            samples.append(Sample(t: t.timeIntervalSince1970, b: b))
+            t += 60
+        }
+        return samples
     }
 
     func snapshot(config: Config) async throws -> Snapshot {

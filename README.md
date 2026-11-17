@@ -12,9 +12,20 @@ Jobs are matched to your registered self-hosted runners by label, so custom labe
 
 ![Panel](docs/panel.png)
 
-The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Click it for a panel with every queued and running job (repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step) plus your self-hosted runners and whether each is busy, idle or offline. Click a job to open it on GitHub.
+The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶). Click it for a panel (it grows to fit the screen and closes when you click anywhere else) with:
 
-`CIQueueBar --snapshot out.png` renders that panel with live data to a PNG.
+- every queued and running job: repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step, and **CPU cores the job is using**
+- your self-hosted runners and whether each is busy, idle or offline, with live CPU
+- **history per runner type**: queued and running jobs over 1H / 6H / 1D / 7D / 30D, plus a stacked chart of **CPU per runner**
+
+Click a job to open it on GitHub. History lives in `~/Library/Application Support/CIQueueBar/history.jsonl` (30 days). On first launch the last 24 hours of queue history is rebuilt from GitHub job timestamps; CPU history starts when the app does.
+
+### CPU per job
+
+- **Local runners** (on the Mac running the app): CPU of each `Runner.Worker` process and everything under it, plus detached processes whose path is inside a `.../slots/<runner>/` folder. The runner name comes from the runner's `.runner` file.
+- **Runners in a Linux VM or another host**: add the host to `sshCpuHosts`. The app runs `systemctl show 'actions.runner.*'` over ssh every 10 seconds and turns each service's CPUUsageNSec into cores. Jobs in Docker containers aren't counted (they run in the Docker daemon's cgroup).
+
+`CIQueueBar --snapshot out.png [--period 1D]` renders that panel with live data to a PNG.
 
 ## Install
 
@@ -35,7 +46,9 @@ Optional `~/.config/ciqueuebar/config.json`:
   "repos": ["owner/repo", "org/other"],
   "recentDays": 2,
   "maxRepos": 25,
-  "refreshSeconds": 60
+  "refreshSeconds": 60,
+  "backfillHours": 24,
+  "sshCpuHosts": [["-F", "~/.ssh/myvm.config", "my-linux-vm"]]
 }
 ```
 

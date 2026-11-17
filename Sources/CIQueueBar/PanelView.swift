@@ -1,11 +1,32 @@
 import SwiftUI
+import Charts
 
 final class Store: ObservableObject {
     @Published var snapshot = Snapshot()
     @Published var error: String?
     @Published var updated: Date?
     @Published var refreshing = false
+    /// Runner name -> CPU cores in use.
+    @Published var cpu: [String: Double] = [:]
+    /// Bumped whenever history changes so charts redraw.
+    @Published var historyVersion = 0
+    @Published var maxHeight: CGFloat = 900
+    @Published var period: Period = Period(rawValue: UserDefaults.standard.string(forKey: "period") ?? "") ?? .h6 {
+        didSet { UserDefaults.standard.set(period.rawValue, forKey: "period") }
+    }
+    let history = HistoryStore()
+
+    func cpu(for runners: [Runner]) -> Double {
+        runners.reduce(0) { $0 + (cpu[$1.name] ?? 0) }
+    }
 }
+
+private struct HeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+func cores(_ c: Double) -> String { c < 10 ? String(format: "%.1f", c) : String(format: "%.0f", c) }
 
 struct PanelView: View {
     @ObservedObject var store: Store
@@ -13,27 +34,34 @@ struct PanelView: View {
     var onRefresh: () -> Void = {}
     var onConfig: () -> Void = {}
     var onQuit: () -> Void = {}
+    @State private var contentHeight: CGFloat = 200
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             if scrolls {
-                ScrollView { content }.frame(maxHeight: 720)
+                // Grow to fit; only scroll when taller than the screen allows.
+                ScrollView {
+                    content.background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
+                }
+                .frame(height: min(contentHeight, store.maxHeight))
+                .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
             } else {
                 content
             }
             Divider()
             footer
         }
-        .frame(width: 600)
+        .frame(width: 640)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
             Text("CI Queue").font(.headline)
+            PeriodPicker(period: $store.period)
             Spacer()
-            ForEach(store.snapshot.groups) { g in
+            ForEach(visibleGroups) { g in
                 HStack(spacing: 4) {
                     Image(systemName: g.bucket.symbol)
                     Text("\(g.queued.count)").foregroundStyle(g.queued.isEmpty ? Color.secondary : Color.orange)
@@ -56,10 +84,13 @@ struct PanelView: View {
             }
             if store.updated == nil {
                 HStack { ProgressView().controlSize(.small); Text("Loading…").foregroundStyle(.secondary) }
-            } else if store.snapshot.groups.isEmpty {
+            } else if visibleGroups.isEmpty {
                 Text("No queued or running jobs").foregroundStyle(.secondary)
             }
-            ForEach(store.snapshot.groups) { g in BucketSection(group: g) }
+            ForEach(visibleGroups) { g in
+                BucketSection(group: g, store: store,
+                              bins: store.history.bins(bucket: g.bucket, period: store.period))
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -71,6 +102,16 @@ struct PanelView: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: action)
             .help(help)
+    }
+
+    /// Live groups plus any runner type that had jobs during the chosen period.
+    private var visibleGroups: [BucketGroup] {
+        let live = store.snapshot.groups
+        return Bucket.allCases.compactMap { b in
+            if let g = live.first(where: { $0.bucket == b }) { return g }
+            let busy = store.history.bins(bucket: b, period: store.period).contains { $0.queued > 0 || $0.running > 0 }
+            return busy ? BucketGroup(bucket: b, queued: [], running: [], runners: []) : nil
+        }
     }
 
     private var footer: some View {
@@ -95,12 +136,18 @@ struct PanelView: View {
 
 struct BucketSection: View {
     let group: BucketGroup
+    @ObservedObject var store: Store
+    let bins: [Bin]
 
     var body: some View {
+        let groupCPU = store.cpu(for: group.runners)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Label(group.bucket.rawValue, systemImage: group.bucket.symbol).font(.system(size: 13, weight: .bold))
                 Spacer()
+                if !group.runners.isEmpty && groupCPU > 0.05 {
+                    Text("CPU \(cores(groupCPU)) cores").font(.caption.monospacedDigit()).foregroundStyle(.green)
+                }
                 Text("\(group.queued.count) queued · \(group.running.count) running")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 if let w = group.longestWait {
@@ -109,9 +156,14 @@ struct BucketSection: View {
                         .foregroundStyle(w > 600 ? .red : .orange)
                 }
             }
-            if !group.runners.isEmpty { RunnerStrip(runners: group.runners) }
-            ForEach(group.queued) { JobRow(job: $0) }
-            ForEach(group.running) { JobRow(job: $0) }
+            HistoryChart(bins: bins, period: store.period, showCPU: false)
+            if !group.runners.isEmpty {
+                RunnerCPUChart(points: store.history.runnerCPU(runners: group.runners.map(\.name), period: store.period),
+                               period: store.period)
+            }
+            if !group.runners.isEmpty { RunnerStrip(runners: group.runners, cpu: store.cpu) }
+            ForEach(group.queued) { JobRow(job: $0, cpu: nil) }
+            ForEach(group.running) { JobRow(job: $0, cpu: $0.runnerName.flatMap { store.cpu[$0] }) }
             if group.queued.isEmpty && group.running.isEmpty {
                 Text("Idle").font(.caption).foregroundStyle(.secondary)
             }
@@ -123,6 +175,7 @@ struct BucketSection: View {
 
 struct RunnerStrip: View {
     let runners: [Runner]
+    let cpu: [String: Double]
 
     var body: some View {
         let online = runners.filter(\.online)
@@ -135,6 +188,9 @@ struct RunnerStrip: View {
                     HStack(spacing: 3) {
                         Circle().fill(r.online ? (r.busy ? Color.blue : Color.green) : Color.gray).frame(width: 6, height: 6)
                         Text(r.name).font(.system(size: 10).monospaced())
+                        if let c = cpu[r.name], c >= 0.05 {
+                            Text(cores(c)).font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundStyle(.green)
+                        }
                     }
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.06)))
@@ -146,6 +202,7 @@ struct RunnerStrip: View {
 
 struct JobRow: View {
     let job: Job
+    let cpu: Double?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -156,6 +213,10 @@ struct JobRow: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text(job.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                         Spacer(minLength: 6)
+                        if let c = cpu {
+                            Text("CPU \(cores(c))").font(.caption.monospacedDigit()).foregroundStyle(.green)
+                                .help("CPU cores used by this job's processes")
+                        }
                         Text(timing).font(.caption.monospacedDigit())
                             .foregroundStyle(job.isRunning ? Color.blue : Color.orange)
                     }
@@ -234,4 +295,118 @@ struct FlowLayout: Layout {
 /// "Run actions/checkout@93cb6efe…" -> "Run actions/checkout@93cb6ef"
 func tidyStep(_ s: String) -> String {
     s.replacingOccurrences(of: "@([0-9a-f]{7})[0-9a-f]{33}", with: "@$1", options: .regularExpression)
+}
+
+struct PeriodPicker: View {
+    @Binding var period: Period
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Period.allCases) { p in
+                Text(p.rawValue)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(p == period ? Color.accentColor.opacity(0.85) : .clear))
+                    .foregroundStyle(p == period ? Color.white : Color.secondary)
+                    .contentShape(Rectangle())
+                    .onTapGesture { period = p }
+            }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
+    }
+}
+
+/// Queued (orange area) and running (blue line) over the chosen period, CPU cores (green) below.
+struct HistoryChart: View {
+    let bins: [Bin]
+    let period: Period
+    let showCPU: Bool
+
+    private var domain: ClosedRange<Date> { Date().addingTimeInterval(-period.seconds)...Date() }
+
+    var body: some View {
+        if bins.isEmpty {
+            Text("No history for this period yet").font(.caption2).foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 30)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 10) {
+                    legend(.orange, "queued", peak: bins.map(\.queued).max() ?? 0)
+                    legend(.blue, "running", peak: bins.map(\.running).max() ?? 0)
+                    if showCPU, bins.filter({ $0.cpu != nil }).count >= 2, let c = bins.compactMap(\.cpu).max() {
+                        legend(.green, "CPU cores", peak: c)
+                    }
+                }
+                Chart {
+                    ForEach(bins) { b in
+                        AreaMark(x: .value("Time", b.date), y: .value("Queued", b.queued))
+                            .foregroundStyle(Color.orange.opacity(0.45))
+                            .interpolationMethod(.stepCenter)
+                        LineMark(x: .value("Time", b.date), y: .value("Jobs", b.running), series: .value("s", "running"))
+                            .foregroundStyle(Color.blue)
+                            .interpolationMethod(.stepCenter)
+                            .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    }
+                }
+                .chartXScale(domain: domain)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: axisFormat) } }
+                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel() } }
+                .frame(height: 70)
+                if showCPU, bins.filter({ $0.cpu != nil }).count >= 2 {
+                    Chart {
+                        ForEach(bins.filter { $0.cpu != nil }) { b in
+                            AreaMark(x: .value("Time", b.date), y: .value("CPU", b.cpu ?? 0))
+                                .foregroundStyle(Color.green.opacity(0.35))
+                                .interpolationMethod(.monotone)
+                        }
+                    }
+                    .chartXScale(domain: domain)
+                    .chartXAxis(.hidden)
+                    .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 2)) { AxisValueLabel() } }
+                    .frame(height: 28)
+                }
+            }
+            .font(.caption2)
+        }
+    }
+
+    private var axisFormat: Date.FormatStyle {
+        period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()
+    }
+
+    private func legend(_ c: Color, _ name: String, peak: Double) -> some View {
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 8, height: 8)
+            Text("\(name) · peak \(name == "CPU cores" ? cores(peak) : String(Int(peak)))").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Stacked CPU cores per runner (agent) over the period.
+struct RunnerCPUChart: View {
+    let points: [RunnerCPUPoint]
+    let period: Period
+
+    var body: some View {
+        if Set(points.map(\.date)).count >= 2 {
+            let peak = Dictionary(grouping: points, by: \.date).values.map { $0.reduce(0) { $0 + $1.cores } }.max() ?? 0
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CPU cores per runner · peak total \(cores(peak))").font(.caption2).foregroundStyle(.secondary)
+                Chart(points) { p in
+                    AreaMark(x: .value("Time", p.date), y: .value("Cores", p.cores), stacking: .standard)
+                        .foregroundStyle(by: .value("Runner", p.label))
+                        .interpolationMethod(.monotone)
+                }
+                .chartXScale(domain: Date().addingTimeInterval(-period.seconds)...Date())
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { AxisGridLine(); AxisValueLabel(format: period.seconds > 86400 ? .dateTime.month(.abbreviated).day() : .dateTime.hour().minute()) } }
+                .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(); AxisValueLabel() } }
+                .chartLegend(position: .bottom, alignment: .leading, spacing: 4)
+                .frame(height: 110)
+            }
+            .font(.caption2)
+        } else {
+            Text("CPU per runner: collecting (one point per minute)").font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
 }

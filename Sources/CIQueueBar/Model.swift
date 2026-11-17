@@ -47,6 +47,8 @@ enum Bucket: String, CaseIterable, Identifiable {
     case other = "Other"
 
     var id: String { rawValue }
+    /// Stable key used in the history file.
+    var key: String { String(describing: self) }
 
     var short: String {
         switch self {
@@ -99,6 +101,11 @@ struct Config: Decodable {
     var recentDays: Double?
     var maxRepos: Int?
     var refreshSeconds: Double?
+    /// ssh arguments for Linux runner hosts, e.g. [["-F", "~/.ssh/vm.config", "my-vm"]].
+    /// CPU per job is read from each runner's systemd service (actions.runner.*).
+    var sshCpuHosts: [[String]]?
+    /// Hours of history to rebuild from GitHub on first launch (0 disables).
+    var backfillHours: Double?
 
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ciqueuebar")
