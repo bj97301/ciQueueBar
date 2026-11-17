@@ -17,6 +17,9 @@ The menu bar shows counts like `Mac 3⏳1▶  BS 2▶` (queued ⏳, running ▶)
 - every queued and running job: repo, workflow and run number, branch, who triggered it, commit title, wait or run time, current step, and **CPU cores the job is using**
 - your self-hosted runners and whether each is busy, idle or offline, with live CPU
 - **history per runner type**: queued and running jobs over 1H / 6H / 1D / 7D / 30D, plus a stacked chart of **CPU per runner**
+- **hover the queue chart** to see which project, branch and workflow / job were queued and running at that moment
+
+![Hover](docs/hover.png)
 
 Click a job to open it on GitHub. History lives in `~/Library/Application Support/CIQueueBar/history.jsonl` (30 days). On first launch the last 24 hours of queue history is rebuilt from GitHub job timestamps; CPU history starts when the app does.
 
@@ -25,7 +28,7 @@ Click a job to open it on GitHub. History lives in `~/Library/Application Suppor
 - **Local runners** (on the Mac running the app): CPU of each `Runner.Worker` process and everything under it, plus detached processes whose path is inside a `.../slots/<runner>/` folder. The runner name comes from the runner's `.runner` file.
 - **Runners in a Linux VM or another host**: add the host to `sshCpuHosts`. The app runs `systemctl show 'actions.runner.*'` over ssh every 10 seconds and turns each service's CPUUsageNSec into cores. Jobs in Docker containers aren't counted (they run in the Docker daemon's cgroup).
 
-`CIQueueBar --snapshot out.png [--period 1D]` renders that panel with live data to a PNG.
+`CIQueueBar --snapshot out.png [--period 1D] [--hover linux <unix time>]` renders that panel with live data to a PNG.
 
 ## Install
 

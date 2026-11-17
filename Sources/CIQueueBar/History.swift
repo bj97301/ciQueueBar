@@ -6,6 +6,22 @@ struct Sample: Codable {
     let b: [String: [Double]]
     /// Mean CPU cores per runner since the previous sample (runners under 0.05 omitted).
     var c: [String: Double]? = nil
+    /// Per bucket key: which jobs were queued / running.
+    var j: [String: JobRefs]? = nil
+}
+
+struct JobRef: Codable, Hashable {
+    let r: String       // repo (short)
+    let br: String?     // branch
+    let w: String       // workflow
+    let n: String       // job
+
+    var text: String { [r, br, "\(w) / \(n)"].compactMap { $0 }.joined(separator: " · ") }
+}
+
+struct JobRefs: Codable {
+    var q: [JobRef] = []
+    var run: [JobRef] = []
 }
 
 struct RunnerCPUPoint: Identifiable {
@@ -36,6 +52,8 @@ struct Bin: Identifiable {
     let queued: Double
     let running: Double
     let cpu: Double?
+    /// Jobs at the busiest moment in the bin; nil when not recorded.
+    let jobs: JobRefs?
 }
 
 /// Append-only JSON-lines history, kept for 30 days.
@@ -117,16 +135,21 @@ final class HistoryStore {
         let width = period.seconds / Double(count)
         var q = [Double](repeating: -1, count: count), r = q
         var cpuSum = [Double](repeating: 0, count: count), cpuN = [Int](repeating: 0, count: count)
+        var jobs = [JobRefs?](repeating: nil, count: count), busiest = [Double](repeating: -1, count: count)
         for s in samples where s.t >= start && s.t <= end {
             guard let v = s.b[bucket.key], v.count >= 2 else { continue }
             let i = min(count - 1, Int((s.t - start) / width))
             q[i] = max(q[i], v[0]); r[i] = max(r[i], v[1])
+            if let j = s.j, v[0] * 1000 + v[1] > busiest[i] {
+                busiest[i] = v[0] * 1000 + v[1]
+                jobs[i] = j[bucket.key] ?? JobRefs()
+            }
             if v.count > 2, v[2] >= 0 { cpuSum[i] += v[2]; cpuN[i] += 1 }
         }
         return (0..<count).compactMap { i in
             guard q[i] >= 0 else { return nil }
             return Bin(date: Date(timeIntervalSince1970: start + (Double(i) + 0.5) * width),
-                       queued: q[i], running: r[i], cpu: cpuN[i] > 0 ? cpuSum[i] / Double(cpuN[i]) : nil)
+                       queued: q[i], running: r[i], cpu: cpuN[i] > 0 ? cpuSum[i] / Double(cpuN[i]) : nil, jobs: jobs[i])
         }
     }
 }

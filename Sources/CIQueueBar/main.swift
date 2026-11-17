@@ -107,7 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let cpu = (g?.runners.isEmpty ?? true) ? -1 : g!.runners.reduce(0) { $0 + (mean[$1.name] ?? 0) }
             b[bucket.key] = [Double(g?.queued.count ?? 0), Double(g?.running.count ?? 0), cpu]
         }
-        store.history.append(Sample(t: Date().timeIntervalSince1970, b: b, c: mean.filter { $0.value >= 0.05 }))
+        var refs: [String: JobRefs] = [:]
+        for g in groups {
+            func ref(_ j: Job) -> JobRef { JobRef(r: j.repoShort, br: j.branch, w: j.workflow, n: j.name) }
+            refs[g.bucket.key] = JobRefs(q: g.queued.map(ref), run: g.running.map(ref))
+        }
+        store.history.append(Sample(t: Date().timeIntervalSince1970, b: b, c: mean.filter { $0.value >= 0.05 }, j: refs))
         store.historyVersion += 1
     }
 
@@ -132,8 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
 /// `CIQueueBar --snapshot out.png [--period 1H|6H|1D|7D|30D]` renders the panel with live data to a PNG and exits.
 @MainActor
-func renderSnapshot(to path: String, period: Period?) async {
+func renderSnapshot(to path: String, period: Period?, hover: (Bucket, Date)?) async {
     let store = Store()
+    store.pinnedHover = hover
     if let period { store.period = period }
     let config = Config.load()
     let sampler = CPUSampler()
@@ -160,7 +166,13 @@ MainActor.assumeIsolated {
     if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
         let period = args.firstIndex(of: "--period").flatMap { $0 + 1 < args.count ? Period(rawValue: args[$0 + 1]) : nil }
         app.setActivationPolicy(.prohibited)
-        Task { await renderSnapshot(to: args[i + 1], period: period) }
+        // --hover <bucket key> <unix time>: show that chart's hover card at that moment
+        let hover: (Bucket, Date)? = args.firstIndex(of: "--hover").flatMap { i in
+            guard i + 2 < args.count, let b = Bucket.allCases.first(where: { $0.key == args[i + 1] }),
+                  let t = Double(args[i + 2]) else { return nil }
+            return (b, Date(timeIntervalSince1970: t))
+        }
+        Task { await renderSnapshot(to: args[i + 1], period: period, hover: hover) }
         app.run()
     } else {
         let delegate = AppDelegate()

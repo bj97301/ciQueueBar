@@ -143,7 +143,7 @@ final class GitHubClient: @unchecked Sendable {
         guard hours > 0, let repos = try? await repos(config: config) else { return [] }
         let since = Date().addingTimeInterval(-hours * 3600)
         let day = ISO8601DateFormatter.string(from: since, timeZone: .gmt, formatOptions: [.withFullDate])
-        struct Span { let bucket: Bucket; let created: Date; let started: Date?; let ended: Date? }
+        struct Span { let bucket: Bucket; let created: Date; let started: Date?; let ended: Date?; let ref: JobRef }
         let spans: [Span] = await withTaskGroup(of: [Span].self) { group in
             for repo in repos {
                 group.addTask {
@@ -165,7 +165,11 @@ final class GitHubClient: @unchecked Sendable {
                                             created: created,
                                             // queued jobs report started_at == created_at
                                             started: ["queued", "waiting", "pending"].contains(j["status"] as? String ?? "") ? nil : Self.parseDate(j["started_at"]),
-                                            ended: Self.parseDate(j["completed_at"])))
+                                            ended: Self.parseDate(j["completed_at"]),
+                                            ref: JobRef(r: repo.split(separator: "/").last.map(String.init) ?? repo,
+                                                        br: run["head_branch"] as? String,
+                                                        w: run["name"] as? String ?? "workflow",
+                                                        n: j["name"] as? String ?? "job")))
                         }
                     }
                     return out
@@ -180,13 +184,16 @@ final class GitHubClient: @unchecked Sendable {
         let now = Date()
         while t < now {
             var b: [String: [Double]] = [:]
+            var refs: [String: JobRefs] = [:]
             for s in spans where s.created <= t && (s.ended ?? now) > t {
                 var v = b[s.bucket.key] ?? [0, 0, -1]
-                if let st = s.started, st <= t { v[1] += 1 } else { v[0] += 1 }
+                var r = refs[s.bucket.key] ?? JobRefs()
+                if let st = s.started, st <= t { v[1] += 1; r.run.append(s.ref) } else { v[0] += 1; r.q.append(s.ref) }
                 b[s.bucket.key] = v
+                refs[s.bucket.key] = r
             }
             for bucket in Bucket.allCases where b[bucket.key] == nil { b[bucket.key] = [0, 0, -1] }
-            samples.append(Sample(t: t.timeIntervalSince1970, b: b))
+            samples.append(Sample(t: t.timeIntervalSince1970, b: b, j: refs))
             t += 60
         }
         return samples
