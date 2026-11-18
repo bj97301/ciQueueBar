@@ -145,7 +145,7 @@ struct PanelView: View {
         Image(systemName: symbol)
             .font(.s(12))
             .contentShape(Rectangle())
-            .onTapGesture(perform: action)
+            .onTapGesture { debugLog("tap: \(help)"); action() }
             .help(help)
     }
 
@@ -287,7 +287,7 @@ struct JobRow: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { if let u = job.url { NSWorkspace.shared.open(u) } }
+            .onTapGesture { debugLog("tap: job \(job.url?.absoluteString ?? "-")"); if let u = job.url { NSWorkspace.shared.open(u) } }
         .help(job.labels.joined(separator: ", "))
     }
 
@@ -327,7 +327,7 @@ struct T3Button: View {
         .font(.s(11, .medium))
         .foregroundStyle(Color.purple)
         .contentShape(Rectangle())
-        .onTapGesture { NSWorkspace.shared.open(link.url) }
+        .onTapGesture { debugLog("tap: T3 \(link.url)"); NSWorkspace.shared.open(link.url) }
         .help("Open this T3 Code thread")
     }
 }
@@ -412,7 +412,7 @@ struct Segmented<T: Hashable & Identifiable & CaseIterable & RawRepresentable>: 
                     .background(RoundedRectangle(cornerRadius: 5).fill(p == value ? Color.accentColor.opacity(0.85) : .clear))
                     .foregroundStyle(p == value ? Color.white : Color.secondary)
                     .contentShape(Rectangle())
-                    .onTapGesture { value = p }
+                    .onTapGesture { debugLog("tap: segment \(p.rawValue)"); value = p }
             }
         }
         .padding(2)

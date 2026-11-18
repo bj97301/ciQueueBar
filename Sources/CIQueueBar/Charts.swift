@@ -322,7 +322,7 @@ struct CPUSection: View {
                     Spacer()
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { if let u = j.url { NSWorkspace.shared.open(u) } }
+                .onTapGesture { debugLog("tap: hover job \(j.url?.absoluteString ?? "-")"); if let u = j.url { NSWorkspace.shared.open(u) } }
             }
 
             StackedCPUChart(id: "cpu-group", title: "CPU cores by \(store.cpuGroup.rawValue.lowercased())",

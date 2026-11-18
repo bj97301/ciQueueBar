@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func toggle() {
         guard let b = statusItem.button else { return }
+        debugLog("toggle: shown \(popover.isShown), app active \(NSApp.isActive)")
         if popover.isShown { popover.performClose(nil); return }
         // Room for header + footer + popover chrome; content grows up to the rest.
         let screen = b.window?.screen ?? NSScreen.main
@@ -54,25 +55,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Take keyboard focus (you just clicked us) so Esc reaches the panel; focus goes back on close.
         NSApp.activate(ignoringOtherApps: true)
         popover.contentViewController?.view.window?.makeKey()
+        removeMonitors()
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.keyCode == 53 { self?.popover.performClose(nil); return nil }   // Esc
             return e
         }
         // Clicks in other apps don't reach a transient popover of an inactive app; close on any of them.
+        // Ignore clicks that land on the panel or the menu bar item (they belong to us).
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.popover.performClose(nil) }
+            let at = NSEvent.mouseLocation
+            Task { @MainActor in
+                guard let self, self.popover.isShown else { return }
+                let panel = self.popover.contentViewController?.view.window?.frame ?? .zero
+                let item = self.statusItem.button?.window?.frame ?? .zero
+                if panel.contains(at) || item.contains(at) {
+                    debugLog("outside-click monitor: click at \(at) is inside panel \(panel) / item \(item); ignored")
+                    return
+                }
+                debugLog("outside-click monitor: click at \(at) outside panel \(panel); front app \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"); closing")
+                self.popover.performClose(nil)
+            }
         }
         if let u = store.updated, Date().timeIntervalSince(u) > 20 { refresh() }
         sampleCPU()
     }
 
+    nonisolated func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        let stack = Thread.callStackSymbols.prefix(14).map { "    " + $0 }.joined(separator: "\n")
+        let event = MainActor.assumeIsolated { NSApp.currentEvent.map { "\($0.type.rawValue) win \($0.windowNumber) at \(NSEvent.mouseLocation)" } ?? "none" }
+        debugLog("popoverShouldClose; app active \(MainActor.assumeIsolated { NSApp.isActive }); event \(event)\n\(stack)")
+        return true
+    }
+
     nonisolated func popoverDidClose(_ notification: Notification) {
         Task { @MainActor in
-            if let m = outsideClickMonitor { NSEvent.removeMonitor(m); outsideClickMonitor = nil }
-            if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+            debugLog("popoverDidClose; app active \(NSApp.isActive), reshown \(popover.isShown)")
+            // Reopened meanwhile (e.g. a click on the menu bar item closes then reopens): keep its monitors and focus.
+            if popover.isShown { return }
+            removeMonitors()
             // Give focus back to whatever app was in front before the click.
             if NSApp.isActive { NSApp.hide(nil) }
         }
+    }
+
+    private func removeMonitors() {
+        if let m = outsideClickMonitor { NSEvent.removeMonitor(m); outsideClickMonitor = nil }
+        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
     }
 
     func refresh() {
@@ -264,5 +292,18 @@ MainActor.assumeIsolated {
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
+    }
+}
+
+/// Appends a timestamped line to ~/Library/Logs/CIQueueBar.log (trimmed at 1 MB) for diagnosing panel behaviour.
+func debugLog(_ message: String) {
+    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/CIQueueBar.log")
+    let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+    if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+       (attrs[.size] as? Int ?? 0) > 1_000_000 { try? FileManager.default.removeItem(at: url) }
+    if let h = try? FileHandle(forWritingTo: url) {
+        h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+    } else {
+        try? Data(line.utf8).write(to: url)
     }
 }
