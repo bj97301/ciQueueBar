@@ -18,6 +18,10 @@ enum HoverContent {
     case rows(title: String, rows: [HoverRow], footer: String?)
 }
 
+final class HoverModel: ObservableObject {
+    @Published var info: HoverInfo?
+}
+
 struct HoverInfo {
     let chart: String
     let date: Date
@@ -38,7 +42,7 @@ struct ChartHoverLayer: View {
     let proxy: ChartProxy
     let chart: String
     let period: Period
-    @ObservedObject var store: Store
+    let store: Store
     /// Snap a cursor time to the nearest data time.
     let snap: (Date) -> Date?
     let content: (Date) -> HoverContent?
@@ -47,25 +51,57 @@ struct ChartHoverLayer: View {
         GeometryReader { geo in
             let origin = geo.frame(in: .named("panel")).origin
             let plotX = proxy.plotFrame.map { geo[$0].origin.x } ?? 0
-            Rectangle().fill(Color.clear).contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let p):
-                        guard let d: Date = proxy.value(atX: p.x - plotX), let t = snap(d), let c = content(t) else { return }
-                        store.hover = HoverInfo(chart: chart, date: t, showDay: period.seconds > 86400,
-                                                point: CGPoint(x: origin.x + p.x, y: origin.y + p.y), content: c)
-                    case .ended:
-                        if store.hover?.chart == chart { store.hover = nil }
+            let hover = store.hover
+            ZStack(alignment: .topLeading) {
+                HoverRule(model: hover, chart: chart, proxy: proxy, plotX: plotX)
+                Rectangle().fill(Color.clear).contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let p):
+                            guard let d: Date = proxy.value(atX: p.x - plotX), let t = snap(d) else { return }
+                            let point = CGPoint(x: origin.x + p.x, y: origin.y + p.y)
+                            // Same data point: just move the card, don't rebuild its contents.
+                            if let cur = hover.info, cur.chart == chart, cur.date == t {
+                                if abs(cur.point.x - point.x) + abs(cur.point.y - point.y) >= 2 {
+                                    hover.info = HoverInfo(chart: chart, date: t, showDay: cur.showDay, point: point, content: cur.content)
+                                }
+                                return
+                            }
+                            guard let c = content(t) else { return }
+                            hover.info = HoverInfo(chart: chart, date: t, showDay: period.seconds > 86400, point: point, content: c)
+                        case .ended:
+                            if hover.info?.chart == chart { hover.info = nil }
+                        }
                     }
-                }
+            }
                 .onAppear {
                     // Snapshot mode: pin a hover card.
                     guard let pin = store.pinnedHover, pin.chart == chart, let t = snap(pin.date), let c = content(t),
                           let x = proxy.position(forX: t) else { return }
-                    store.hover = HoverInfo(chart: chart, date: t, showDay: period.seconds > 86400,
+                    hover.info = HoverInfo(chart: chart, date: t, showDay: period.seconds > 86400,
                                             point: CGPoint(x: origin.x + plotX + x, y: origin.y + 20 * UIScale), content: c)
                 }
         }
+    }
+}
+
+/// Vertical line at the hovered time; the only part of a chart that redraws while the mouse moves.
+struct HoverRule: View {
+    @ObservedObject var model: HoverModel
+    let chart: String
+    let proxy: ChartProxy
+    let plotX: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            if let h = model.info, h.chart == chart, let x = proxy.position(forX: h.date),
+               let plot = proxy.plotFrame.map({ geo[$0] }) {
+                Rectangle().fill(Color.primary.opacity(0.5))
+                    .frame(width: 1, height: plot.height)
+                    .offset(x: plotX + x, y: plot.minY)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -158,7 +194,7 @@ struct HistoryChart: View {
     let bins: [Bin]
     let period: Period
     let bucket: Bucket
-    @ObservedObject var store: Store
+    let store: Store
 
     private var id: String { "queue-\(bucket.key)" }
     private var domain: ClosedRange<Date> { Date().addingTimeInterval(-period.seconds)...Date() }
@@ -184,9 +220,6 @@ struct HistoryChart: View {
                             .foregroundStyle(Color.blue)
                             .interpolationMethod(.stepCenter)
                             .lineStyle(StrokeStyle(lineWidth: 1.5))
-                    }
-                    if let h = store.hover, h.chart == id {
-                        RuleMark(x: .value("Time", h.date)).foregroundStyle(Color.primary.opacity(0.5))
                     }
                 }
                 .chartXScale(domain: domain)
@@ -219,7 +252,7 @@ struct StackedCPUChart: View {
     let title: String
     let points: [RunnerCPUPoint]
     let period: Period
-    @ObservedObject var store: Store
+    let store: Store
 
     private var labels: [String] { points.map(\.label).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } } }
     private func color(_ label: String) -> Color {
@@ -242,9 +275,6 @@ struct StackedCPUChart: View {
                         AreaMark(x: .value("Time", p.date), y: .value("Cores", p.cores), stacking: .standard)
                             .foregroundStyle(by: .value("Series", p.label))
                             .interpolationMethod(.monotone)
-                    }
-                    if let h = store.hover, h.chart == id {
-                        RuleMark(x: .value("Time", h.date)).foregroundStyle(Color.primary.opacity(0.5))
                     }
                 }
                 .chartForegroundStyleScale(domain: labels, range: labels.map(color))

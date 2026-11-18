@@ -13,8 +13,8 @@ final class Store: ObservableObject {
     @Published var maxHeight: CGFloat = 900
     /// Section columns (2 when the screen is wide enough; config "columns" overrides).
     @Published var columns = 2
-    /// Hover card shown over the whole panel.
-    @Published var hover: HoverInfo?
+    /// Hover card shown over the whole panel. Its own object, so a mouse move redraws only the card and hover lines.
+    let hover = HoverModel()
     /// Snapshot mode only: show the hover card for this chart id at this time.
     var pinnedHover: (chart: String, date: Date)?
     @Published var cpuGroup: CPUGroup = CPUGroup(rawValue: UserDefaults.standard.string(forKey: "cpuGroup") ?? "") ?? .repo {
@@ -59,7 +59,6 @@ struct PanelView: View {
     var onConfig: () -> Void = {}
     var onQuit: () -> Void = {}
     @State private var contentHeight: CGFloat = 200
-    @State private var cardHeight: CGFloat = 200
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,22 +79,7 @@ struct PanelView: View {
         }
         .frame(width: columnWidth * CGFloat(store.columns) + 7 * UIScale * CGFloat(store.columns - 1) + 14 * UIScale)
         .coordinateSpace(name: "panel")
-        .overlay(alignment: .topLeading) {
-            GeometryReader { root in
-                if let h = store.hover {
-                    let w: CGFloat = 360 * UIScale
-                    let x = h.point.x + w + 16 > root.size.width ? max(4, h.point.x - w - 12) : h.point.x + 14
-                    let y = min(max(4, h.point.y + 12), max(4, root.size.height - cardHeight - 4))
-                    HoverCard(info: h)
-                        .frame(width: w, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .background(GeometryReader { Color.clear.preference(key: CardHeightKey.self, value: $0.size.height) })
-                        .offset(x: x, y: y)
-                        .allowsHitTesting(false)
-                }
-            }
-        }
-        .onPreferenceChange(CardHeightKey.self) { cardHeight = $0 }
+        .overlay(alignment: .topLeading) { HoverOverlay(model: store.hover) }
     }
 
     private var header: some View {
@@ -417,5 +401,28 @@ struct Segmented<T: Hashable & Identifiable & CaseIterable & RawRepresentable>: 
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
+    }
+}
+
+/// The hover card, positioned next to the cursor and kept inside the panel.
+struct HoverOverlay: View {
+    @ObservedObject var model: HoverModel
+    @State private var cardHeight: CGFloat = 200
+
+    var body: some View {
+        GeometryReader { root in
+            if let h = model.info {
+                let w: CGFloat = 360 * UIScale
+                let x = h.point.x + w + 16 > root.size.width ? max(4, h.point.x - w - 12) : h.point.x + 14
+                let y = min(max(4, h.point.y + 12), max(4, root.size.height - cardHeight - 4))
+                HoverCard(info: h)
+                    .frame(width: w, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { Color.clear.preference(key: CardHeightKey.self, value: $0.size.height) })
+                    .offset(x: x, y: y)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onPreferenceChange(CardHeightKey.self) { cardHeight = $0 }
     }
 }
