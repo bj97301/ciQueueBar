@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(toggle)
         popover.behavior = .transient
+        popover.animates = false   // open and close instantly
         popover.delegate = self
         let host = NSHostingController(rootView: PanelView(
             store: store,
